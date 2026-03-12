@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Department Object Handling</title>
+</head>
+<body>
+    <h1>Test Department Object Handling</h1>
+    <div id="result"></div>
+
+    <script>
+        // Test the department handling logic
+        function getDepartmentName(department) {
+            if (typeof department === 'string') {
+                return department;
+            } else if (department && typeof department === 'object' && 'dept_name' in department) {
+                return department.dept_name;
+            }
+            return '';
+        }
+
+        // Test cases
+        const testCases = [
+            { input: "Engineering", expected: "Engineering" },
+            { input: { id: 1, dept_code: "ENG", dept_name: "Engineering" }, expected: "Engineering" },
+            { input: { id: 2, dept_code: "HR", dept_name: "Human Resources" }, expected: "Human Resources" },
+            { input: null, expected: "" },
+            { input: undefined, expected: "" },
+            { input: {}, expected: "" }
+        ];
+
+        let results = [];
+        testCases.forEach((test, index) => {
+            const result = getDepartmentName(test.input);
+            const passed = result === test.expected;
+            results.push(`Test ${index + 1}: ${passed ? 'PASS' : 'FAIL'} - Input: ${JSON.stringify(test.input)}, Expected: "${test.expected}", Got: "${result}"`);
+        });
+
+        document.getElementById('result').innerHTML = '<pre>' + results.join('\n') + '</pre>';
+        
+        console.log('All tests:', results);
+    </script>
+</body>
+</html>

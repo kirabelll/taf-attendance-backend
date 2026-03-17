@@ -1,10 +1,13 @@
 """API Views for Attendance Data"""
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from datetime import datetime, timedelta
 import sys
 import os
+import csv
+import io
+import json
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,6 +45,12 @@ def get_area_name(area):
         return area.get('area_name', area.get('area_code', 'Unknown'))
     return str(area) if area else 'Unknown'
 
+def getDepartmentName(department):
+    """Helper function to get department name from department object or string"""
+    if isinstance(department, dict):
+        return department.get('dept_name', department.get('dept_code', 'Unknown'))
+    return str(department) if department else 'Unknown'
+
 def calculate_late_minutes(punch_time):
     """Calculate late minutes"""
     late_threshold = punch_time.replace(
@@ -57,7 +66,25 @@ def calculate_late_minutes(punch_time):
 def get_log_type(record):
     """Determine log type: Clock In, Clock Out, or Late (M)"""
     punch_time = record['timestamp']
-    punch_type = record['punch_type']
+    punch_type = record.get('punch_type', '')
+    
+    # First, check the actual punch type from ZKBioTime
+    if punch_type in ['Check Out', 'OUT', 'Clock Out', '1', 'Auto Check Out']:
+        return 'Clock Out'
+    elif punch_type in ['Check In', 'IN', 'Clock In', '0', 'Auto Check In']:
+        # Check if it's late
+        late_threshold = punch_time.replace(
+            hour=Config.LATE_THRESHOLD_HOUR,
+            minute=Config.LATE_THRESHOLD_MINUTE,
+            second=0,
+            microsecond=0
+        )
+        if punch_time > late_threshold and punch_time.hour < 12:
+            return 'Late (M)'
+        return 'Clock In'
+    
+    # For unknown punch types (like 255), use improved time-based logic
+    # We need to look at the context of other punches for the same employee on the same day
     late_threshold = punch_time.replace(
         hour=Config.LATE_THRESHOLD_HOUR,
         minute=Config.LATE_THRESHOLD_MINUTE,
@@ -65,19 +92,27 @@ def get_log_type(record):
         microsecond=0
     )
     
-    if punch_type in ['Check In', 'IN'] or punch_time.hour < 12:
-        if punch_time > late_threshold and punch_time.hour < 12:
-            return 'Late (M)'
+    # If it's early in the day and after late threshold, it's likely late arrival
+    if punch_time > late_threshold and punch_time.hour < 12:
+        return 'Late (M)'
+    # If it's early in the day, it's likely clock in
+    elif punch_time.hour < 12:
         return 'Clock In'
-    elif punch_type in ['Check Out', 'OUT'] or punch_time.hour >= 12:
+    # If it's later in the day (after 1 PM), it's more likely clock out
+    elif punch_time.hour >= 13:
         return 'Clock Out'
-    return 'Unknown'
+    # Noon hour is ambiguous - could be late lunch break or early departure
+    else:
+        return 'Clock Out'  # Default to clock out for noon hour
 
 def process_attendance_records(records):
-    """Process raw attendance records into daily summaries"""
+    """Process raw attendance records into daily summaries with total time"""
     daily_records = {}
     
-    for record in records:
+    # Sort records by timestamp to process them in chronological order
+    sorted_records = sorted(records, key=lambda x: x['timestamp'])
+    
+    for record in sorted_records:
         emp_id = record['employee_id']
         emp_name = record.get('employee_name') or get_employee_name(emp_id)
         punch_time = record['timestamp']
@@ -95,14 +130,91 @@ def process_attendance_records(records):
                 'clock_in': None,
                 'clock_out': None,
                 'late_minutes': 0,
-                'device_id': record.get('device_id', 'Unknown')
+                'device_id': record.get('device_id', 'Unknown'),
+                'total_time_hours': 0,
+                'duty_time_hours': 0,
+                'working_hours': 0,
+                'all_punches': [],  # Track all punches for debugging
+                'clock_in_time': None,  # Store as datetime for comparison
+                'clock_out_time': None  # Store as datetime for comparison
             }
         
+        # Track all punches
+        daily_records[key]['all_punches'].append({
+            'time': punch_time.strftime('%H:%M:%S'),
+            'type': log_type,
+            'raw_type': record.get('punch_type', 'Unknown'),
+            'timestamp': punch_time
+        })
+        
+        # Update record with punch data - use earliest clock in and latest clock out
         if log_type in ['Clock In', 'Late (M)']:
-            daily_records[key]['clock_in'] = punch_time.strftime('%H:%M:%S')
-            daily_records[key]['late_minutes'] = late_minutes
+            # Use the first clock in of the day
+            if (daily_records[key]['clock_in_time'] is None or 
+                punch_time < daily_records[key]['clock_in_time']):
+                daily_records[key]['clock_in'] = punch_time.strftime('%H:%M:%S')
+                daily_records[key]['clock_in_time'] = punch_time
+                daily_records[key]['late_minutes'] = late_minutes
         elif log_type == 'Clock Out':
-            daily_records[key]['clock_out'] = punch_time.strftime('%H:%M:%S')
+            # Use the latest clock out of the day
+            if (daily_records[key]['clock_out_time'] is None or 
+                punch_time > daily_records[key]['clock_out_time']):
+                daily_records[key]['clock_out'] = punch_time.strftime('%H:%M:%S')
+                daily_records[key]['clock_out_time'] = punch_time
+        
+        # Add total time data if available
+        if 'total_time_hours' in record:
+            daily_records[key]['total_time_hours'] = record['total_time_hours']
+        if 'duty_time_hours' in record:
+            daily_records[key]['duty_time_hours'] = record['duty_time_hours']
+    
+    # Calculate working hours for records that have both clock in and out
+    for record in daily_records.values():
+        if record['clock_in']:
+            try:
+                clock_in_time = record['clock_in_time']
+                
+                if record['clock_out']:
+                    # Complete day - calculate total hours
+                    clock_out_time = record['clock_out_time']
+                    
+                    # Handle next day clock out
+                    if clock_out_time < clock_in_time:
+                        clock_out_time += timedelta(days=1)
+                    
+                    working_duration = clock_out_time - clock_in_time
+                    record['working_hours'] = round(working_duration.total_seconds() / 3600, 2)
+                else:
+                    # Still working - calculate hours so far (only for today)
+                    record_date = datetime.strptime(record['date'], '%Y-%m-%d').date()
+                    today = datetime.now().date()
+                    
+                    if record_date == today:
+                        # Calculate hours worked so far today
+                        now = datetime.now()
+                        working_duration = now - clock_in_time
+                        record['working_hours'] = round(working_duration.total_seconds() / 3600, 2)
+                        record['status_note'] = 'Currently Working'
+                    else:
+                        # Past date without clock out - unknown hours
+                        record['working_hours'] = 0
+                        record['status_note'] = 'Incomplete Record'
+                
+                # Use total_time_hours if available and more accurate
+                if record['total_time_hours'] > 0:
+                    record['working_hours'] = record['total_time_hours']
+                    
+            except Exception as e:
+                print(f"Error calculating working hours: {e}")
+                record['working_hours'] = 0
+        
+        # Clean up temporary fields
+        if 'clock_in_time' in record:
+            del record['clock_in_time']
+        if 'clock_out_time' in record:
+            del record['clock_out_time']
+        if 'all_punches' in record:
+            del record['all_punches']
     
     return list(daily_records.values())
 
@@ -239,26 +351,44 @@ def get_attendance_by_date(request):
             start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = start_date
         
+        print(f"Fetching attendance data from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        
+        # Get raw records from ZKBioTime
         records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        print(f"Retrieved {len(records)} raw transaction records")
+        
+        # Process records into daily summaries
         processed_records = process_attendance_records(records) if records else []
+        print(f"Processed into {len(processed_records)} daily attendance records")
         
         # Get all employees for absent detection
         all_employees = list(employee_cache.items()) if employee_cache else []
         present_employee_ids = {r['employee_id'] for r in processed_records}
         
-        # Add absent employees
-        for emp_id, emp_name in all_employees:
-            if emp_id not in present_employee_ids:
-                processed_records.append({
-                    'employee_id': emp_id,
-                    'full_name': emp_name,
-                    'date': start_date.strftime('%Y-%m-%d'),
-                    'clock_in': None,
-                    'clock_out': None,
-                    'late_minutes': 0,
-                    'device_id': 'N/A',
-                    'status': 'Absent'
-                })
+        # Add absent employees for each date in the range
+        current_date = start_date
+        while current_date <= end_date:
+            date_key = current_date.strftime('%Y-%m-%d')
+            
+            # Find employees present on this date
+            date_present_ids = {r['employee_id'] for r in processed_records if r['date'] == date_key}
+            
+            # Add absent employees for this date
+            for emp_id, emp_name in all_employees:
+                if emp_id not in date_present_ids:
+                    processed_records.append({
+                        'employee_id': emp_id,
+                        'full_name': emp_name,
+                        'date': date_key,
+                        'clock_in': None,
+                        'clock_out': None,
+                        'late_minutes': 0,
+                        'device_id': 'N/A',
+                        'status': 'Absent',
+                        'working_hours': 0
+                    })
+            
+            current_date += timedelta(days=1)
         
         # Add status to present employees
         for record in processed_records:
@@ -300,6 +430,8 @@ def get_attendance_by_date(request):
         on_time_count = len([r for r in processed_records if r['status'] == 'On Time'])
         total_late_minutes = sum(r['late_minutes'] for r in processed_records)
         
+        print(f"Final statistics: {total_employees} total, {present_count} present, {absent_count} absent, {late_count} late")
+        
         return JsonResponse({
             'success': True,
             'start_date': start_date.strftime('%Y-%m-%d'),
@@ -315,7 +447,9 @@ def get_attendance_by_date(request):
                 'late_arrivals': late_count,
                 'on_time': on_time_count,
                 'total_late_minutes': total_late_minutes,
-                'filtered_count': len(filtered_records)
+                'filtered_count': len(filtered_records),
+                'raw_transactions': len(records),
+                'processed_records': len(processed_records)
             },
             'attendance': filtered_records
         })
@@ -325,6 +459,7 @@ def get_attendance_by_date(request):
             'message': 'Invalid date format. Use YYYY-MM-DD'
         }, status=400)
     except Exception as e:
+        print(f"Error in get_attendance_by_date: {str(e)}")
         return JsonResponse({
             'success': False,
             'message': f'Error: {str(e)}'
@@ -1075,4 +1210,428 @@ def test_device_connection(request, device_id):
         return JsonResponse({
             "success": False,
             "message": f"Connection test failed: {str(e)}"
+        }, status=500)
+
+# Debug endpoint to check transaction processing
+@csrf_exempt
+@require_http_methods(["GET"])
+def debug_attendance_processing(request):
+    """Debug endpoint to see how attendance data is being processed"""
+    try:
+        # Get date parameter (default to today)
+        date_str = request.GET.get('date', datetime.now().strftime('%Y-%m-%d'))
+        employee_id = request.GET.get('employee_id')
+        
+        date = datetime.strptime(date_str, '%Y-%m-%d')
+        
+        # Get raw transactions
+        raw_records = biotime_client.get_transactions_by_date_range(date, date)
+        
+        # Filter by employee if specified
+        if employee_id:
+            raw_records = [r for r in raw_records if r['employee_id'] == employee_id]
+        
+        # Process records
+        processed_records = process_attendance_records(raw_records)
+        
+        # Filter processed records by employee if specified
+        if employee_id:
+            processed_records = [r for r in processed_records if r['employee_id'] == employee_id]
+        
+        debug_info = {
+            'date': date_str,
+            'employee_filter': employee_id,
+            'raw_transactions_count': len(raw_records),
+            'processed_records_count': len(processed_records),
+            'raw_transactions': [
+                {
+                    'employee_id': r['employee_id'],
+                    'employee_name': r.get('employee_name', ''),
+                    'timestamp': r['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
+                    'punch_type': r.get('punch_type', ''),
+                    'raw_punch_state': r.get('raw_punch_state', ''),
+                    'device_id': r.get('device_id', '')
+                } for r in raw_records[:20]  # Limit to first 20 for readability
+            ],
+            'processed_records': processed_records[:10]  # Limit to first 10
+        }
+        
+        return JsonResponse({
+            'success': True,
+            'debug_info': debug_info
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'message': f'Debug failed: {str(e)}'
+        }, status=500)
+
+# Export Functions
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def export_attendance_csv(request):
+    """Export attendance data as CSV"""
+    try:
+        # Get parameters
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        department = request.GET.get('department')
+        
+        if not start_date_str or not end_date_str:
+            return JsonResponse({
+                'success': False,
+                'message': 'start_date and end_date parameters are required'
+            }, status=400)
+        
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        # Load employee cache if empty
+        if not employee_cache:
+            load_employee_cache()
+        
+        # Get attendance data
+        records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        processed_records = process_attendance_records(records) if records else []
+        
+        # Filter by department if specified
+        if department and department != "All":
+            employees = biotime_client.get_employees(page_size=1000) or []
+            dept_employee_ids = set()
+            for emp in employees:
+                emp_dept = getDepartmentName(emp.get('department', ''))
+                if emp_dept == department:
+                    dept_employee_ids.add(emp.get('emp_code', ''))
+            
+            processed_records = [r for r in processed_records if r['employee_id'] in dept_employee_ids]
+        
+        # Add status to records
+        for record in processed_records:
+            if 'status' not in record:
+                if record['clock_in'] is None and record['clock_out'] is None:
+                    record['status'] = 'Absent'
+                elif record['late_minutes'] > 0:
+                    record['status'] = 'Late'
+                else:
+                    record['status'] = 'On Time'
+        
+        # Create CSV response
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="attendance_report_{start_date_str}_to_{end_date_str}.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow(['Employee ID', 'Full Name', 'Date', 'Clock In', 'Clock Out', 'Working Hours', 'Late Minutes', 'Status', 'Device ID'])
+        
+        for record in processed_records:
+            writer.writerow([
+                record['employee_id'],
+                record['full_name'],
+                record['date'],
+                record['clock_in'] or '',
+                record['clock_out'] or '',
+                record.get('working_hours', 0),
+                record['late_minutes'],
+                record['status'],
+                record['device_id']
+            ])
+        
+        return response
+        
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'message': 'Invalid date format. Use YYYY-MM-DD'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'message': f'Export failed: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def export_attendance_excel(request):
+    """Export attendance data as Excel"""
+    try:
+        # Try to import openpyxl
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+        except ImportError:
+            return JsonResponse({
+                'success': False,
+                'message': 'Excel export requires openpyxl. Install with: pip install openpyxl'
+            }, status=500)
+        
+        # Get parameters
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        department = request.GET.get('department')
+        
+        if not start_date_str or not end_date_str:
+            return JsonResponse({
+                'success': False,
+                'message': 'start_date and end_date parameters are required'
+            }, status=400)
+        
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        # Load employee cache if empty
+        if not employee_cache:
+            load_employee_cache()
+        
+        # Get attendance data
+        records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        processed_records = process_attendance_records(records) if records else []
+        
+        # Filter by department if specified
+        if department and department != "All":
+            employees = biotime_client.get_employees(page_size=1000) or []
+            dept_employee_ids = set()
+            for emp in employees:
+                emp_dept = getDepartmentName(emp.get('department', ''))
+                if emp_dept == department:
+                    dept_employee_ids.add(emp.get('emp_code', ''))
+            
+            processed_records = [r for r in processed_records if r['employee_id'] in dept_employee_ids]
+        
+        # Add status to records
+        for record in processed_records:
+            if 'status' not in record:
+                if record['clock_in'] is None and record['clock_out'] is None:
+                    record['status'] = 'Absent'
+                elif record['late_minutes'] > 0:
+                    record['status'] = 'Late'
+                else:
+                    record['status'] = 'On Time'
+        
+        # Create Excel workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Attendance Report"
+        
+        # Header styling
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        
+        # Add headers
+        headers = ['Employee ID', 'Full Name', 'Date', 'Clock In', 'Clock Out', 'Working Hours', 'Late Minutes', 'Status', 'Device ID']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+        
+        # Add data
+        for row, record in enumerate(processed_records, 2):
+            ws.cell(row=row, column=1, value=record['employee_id'])
+            ws.cell(row=row, column=2, value=record['full_name'])
+            ws.cell(row=row, column=3, value=record['date'])
+            ws.cell(row=row, column=4, value=record['clock_in'] or '')
+            ws.cell(row=row, column=5, value=record['clock_out'] or '')
+            ws.cell(row=row, column=6, value=record.get('working_hours', 0))
+            ws.cell(row=row, column=7, value=record['late_minutes'])
+            ws.cell(row=row, column=8, value=record['status'])
+            ws.cell(row=row, column=9, value=record['device_id'])
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to BytesIO
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        # Create response
+        response = HttpResponse(
+            output.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="attendance_report_{start_date_str}_to_{end_date_str}.xlsx"'
+        
+        return response
+        
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'message': 'Invalid date format. Use YYYY-MM-DD'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'message': f'Export failed: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def export_attendance_pdf(request):
+    """Export attendance data as PDF"""
+    try:
+        # Try to import reportlab
+        try:
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib import colors
+            from reportlab.lib.units import inch
+        except ImportError:
+            return JsonResponse({
+                'success': False,
+                'message': 'PDF export requires reportlab. Install with: pip install reportlab'
+            }, status=500)
+        
+        # Get parameters
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        department = request.GET.get('department')
+        
+        if not start_date_str or not end_date_str:
+            return JsonResponse({
+                'success': False,
+                'message': 'start_date and end_date parameters are required'
+            }, status=400)
+        
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        # Load employee cache if empty
+        if not employee_cache:
+            load_employee_cache()
+        
+        # Get attendance data
+        records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        processed_records = process_attendance_records(records) if records else []
+        
+        # Filter by department if specified
+        if department and department != "All":
+            employees = biotime_client.get_employees(page_size=1000) or []
+            dept_employee_ids = set()
+            for emp in employees:
+                emp_dept = getDepartmentName(emp.get('department', ''))
+                if emp_dept == department:
+                    dept_employee_ids.add(emp.get('emp_code', ''))
+            
+            processed_records = [r for r in processed_records if r['employee_id'] in dept_employee_ids]
+        
+        # Add status to records
+        for record in processed_records:
+            if 'status' not in record:
+                if record['clock_in'] is None and record['clock_out'] is None:
+                    record['status'] = 'Absent'
+                elif record['late_minutes'] > 0:
+                    record['status'] = 'Late'
+                else:
+                    record['status'] = 'On Time'
+        
+        # Create PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
+        
+        # Container for the 'Flowable' objects
+        elements = []
+        
+        # Styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            spaceAfter=30,
+            alignment=1  # Center alignment
+        )
+        
+        # Title
+        title = Paragraph(f"Attendance Report<br/>{start_date_str} to {end_date_str}", title_style)
+        elements.append(title)
+        elements.append(Spacer(1, 12))
+        
+        # Summary
+        total_records = len(processed_records)
+        present_count = len([r for r in processed_records if r.get('status') in ['On Time', 'Late']])
+        absent_count = len([r for r in processed_records if r.get('status') == 'Absent'])
+        late_count = len([r for r in processed_records if r.get('status') == 'Late'])
+        
+        summary_text = f"""
+        <b>Summary:</b><br/>
+        Total Records: {total_records}<br/>
+        Present: {present_count}<br/>
+        Absent: {absent_count}<br/>
+        Late: {late_count}<br/>
+        Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        summary = Paragraph(summary_text, styles['Normal'])
+        elements.append(summary)
+        elements.append(Spacer(1, 20))
+        
+        # Table data
+        data = [['Employee ID', 'Full Name', 'Date', 'Clock In', 'Clock Out', 'Hours', 'Status']]
+        
+        for record in processed_records[:100]:  # Limit to first 100 records for PDF
+            data.append([
+                record['employee_id'],
+                record['full_name'][:20] + ('...' if len(record['full_name']) > 20 else ''),
+                record['date'],
+                record['clock_in'] or '—',
+                record['clock_out'] or '—',
+                f"{record.get('working_hours', 0)}h",
+                record['status']
+            ])
+        
+        # Create table
+        table = Table(data, colWidths=[1*inch, 2*inch, 1*inch, 1*inch, 1*inch, 0.8*inch, 1*inch])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        elements.append(table)
+        
+        if len(processed_records) > 100:
+            note = Paragraph(f"<i>Note: Only first 100 records shown. Total records: {len(processed_records)}</i>", styles['Normal'])
+            elements.append(Spacer(1, 12))
+            elements.append(note)
+        
+        # Build PDF
+        doc.build(elements)
+        
+        # Get the value of the BytesIO buffer and write it to the response
+        pdf = buffer.getvalue()
+        buffer.close()
+        
+        response = HttpResponse(content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="attendance_report_{start_date_str}_to_{end_date_str}.pdf"'
+        response.write(pdf)
+        
+        return response
+        
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'message': 'Invalid date format. Use YYYY-MM-DD'
+        }, status=400)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'message': f'Export failed: {str(e)}'
         }, status=500)

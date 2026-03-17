@@ -19,6 +19,14 @@ urlpatterns = [
     path('attendance/daily-summary/', views.get_daily_attendance_summary, name='daily_summary'),
     path('attendance/search/', views.search_employee_attendance, name='search_attendance'),
     
+    # Export endpoints
+    path('attendance/export/csv/', views.export_attendance_csv, name='export_csv'),
+    path('attendance/export/excel/', views.export_attendance_excel, name='export_excel'),
+    path('attendance/export/pdf/', views.export_attendance_pdf, name='export_pdf'),
+    
+    # Debug endpoint
+    path('debug/attendance-processing/', views.debug_attendance_processing, name='debug_attendance'),
+    
     # Device management endpoints
     path('devices/', views.get_devices, name='get_devices'),
     path('devices/stats/', views.get_device_stats, name='get_device_stats'),

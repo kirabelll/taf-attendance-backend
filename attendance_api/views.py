@@ -29,7 +29,13 @@ def load_employee_cache():
                 emp_code = emp.get('emp_code', '')
                 if emp_code:
                     full_name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip()
-                    employee_cache[emp_code] = full_name or 'Unknown'
+                    employee_cache[emp_code] = {
+                        'full_name': full_name or 'Unknown',
+                        'department': emp.get('department', 'Unknown'),
+                        'position': emp.get('position', ''),
+                        'first_name': emp.get('first_name', ''),
+                        'last_name': emp.get('last_name', '')
+                    }
         return True
     except Exception as e:
         print(f"Error loading employees: {str(e)}")
@@ -37,7 +43,10 @@ def load_employee_cache():
 
 def get_employee_name(employee_id):
     """Get employee full name"""
-    return employee_cache.get(employee_id, 'Unknown')
+    emp_data = employee_cache.get(employee_id, {})
+    if isinstance(emp_data, dict):
+        return emp_data.get('full_name', 'Unknown')
+    return str(emp_data) if emp_data else 'Unknown'
 
 def get_area_name(area):
     """Safely extract area name from area object or string"""
@@ -362,7 +371,14 @@ def get_attendance_by_date(request):
         print(f"Processed into {len(processed_records)} daily attendance records")
         
         # Get all employees for absent detection
-        all_employees = list(employee_cache.items()) if employee_cache else []
+        all_employees = []
+        if employee_cache:
+            for emp_id, emp_data in employee_cache.items():
+                if isinstance(emp_data, dict):
+                    all_employees.append((emp_id, emp_data.get('full_name', 'Unknown')))
+                else:
+                    all_employees.append((emp_id, str(emp_data)))
+        
         present_employee_ids = {r['employee_id'] for r in processed_records}
         
         # Add absent employees for each date in the range
@@ -628,8 +644,9 @@ def get_absent_employees(request):
         
         # Find absent employees
         absent_employees = []
-        for emp_id, emp_name in employee_cache.items():
+        for emp_id, emp_data in employee_cache.items():
             if emp_id not in present_employee_ids:
+                emp_name = emp_data.get('full_name', 'Unknown') if isinstance(emp_data, dict) else str(emp_data)
                 absent_employees.append({
                     'employee_id': emp_id,
                     'full_name': emp_name,
@@ -684,8 +701,9 @@ def get_daily_attendance_summary(request):
         
         # Find absent employees
         absent = []
-        for emp_id, emp_name in employee_cache.items():
+        for emp_id, emp_data in employee_cache.items():
             if emp_id not in present_employee_ids:
+                emp_name = emp_data.get('full_name', 'Unknown') if isinstance(emp_data, dict) else str(emp_data)
                 absent.append({
                     'employee_id': emp_id,
                     'full_name': emp_name,
@@ -785,7 +803,8 @@ def search_employee_attendance(request):
         matching_employee_ids = {r['employee_id'] for r in matching_records}
         
         # Add absent records for matching employees
-        for emp_id, emp_name in employee_cache.items():
+        for emp_id, emp_data in employee_cache.items():
+            emp_name = emp_data.get('full_name', 'Unknown') if isinstance(emp_data, dict) else str(emp_data)
             if (search_query.lower() in emp_name.lower() or 
                 search_query.lower() in emp_id.lower()):
                 matching_employee_ids.add(emp_id)
@@ -1266,6 +1285,352 @@ def debug_attendance_processing(request):
             'success': False,
             'message': f'Debug failed: {str(e)}'
         }, status=500)
+
+# Employee Late Report
+@csrf_exempt
+@require_http_methods(["GET"])
+def get_employee_late_report(request):
+    """Get comprehensive late report for all employees"""
+    try:
+        # Load employee cache if empty
+        if not employee_cache:
+            load_employee_cache()
+        
+        # Get date parameters
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        else:
+            # Default to last 30 days
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+        
+        print(f"Generating late report from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        
+        # Get all attendance records for the period
+        records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        processed_records = process_attendance_records(records) if records else []
+        
+        # Calculate late statistics per employee
+        employee_late_stats = {}
+        
+        for record in processed_records:
+            emp_id = record['employee_id']
+            emp_name = record['full_name']
+            late_minutes = record.get('late_minutes', 0)
+            
+            if emp_id not in employee_late_stats:
+                employee_late_stats[emp_id] = {
+                    'employee_id': emp_id,
+                    'full_name': emp_name,
+                    'total_days': 0,
+                    'late_days': 0,
+                    'total_late_minutes': 0,
+                    'average_late_minutes': 0,
+                    'punctuality_rate': 0,
+                    'late_incidents': []
+                }
+            
+            # Count this day
+            employee_late_stats[emp_id]['total_days'] += 1
+            
+            # If employee was late
+            if late_minutes > 0:
+                employee_late_stats[emp_id]['late_days'] += 1
+                employee_late_stats[emp_id]['total_late_minutes'] += late_minutes
+                employee_late_stats[emp_id]['late_incidents'].append({
+                    'date': record['date'],
+                    'clock_in': record['clock_in'],
+                    'late_minutes': late_minutes
+                })
+        
+        # Calculate averages and rates
+        for emp_id, stats in employee_late_stats.items():
+            if stats['total_days'] > 0:
+                stats['punctuality_rate'] = round(((stats['total_days'] - stats['late_days']) / stats['total_days']) * 100, 2)
+            
+            if stats['late_days'] > 0:
+                stats['average_late_minutes'] = round(stats['total_late_minutes'] / stats['late_days'], 2)
+        
+        # Convert to list and sort by total late minutes (worst first)
+        late_report = list(employee_late_stats.values())
+        late_report.sort(key=lambda x: x['total_late_minutes'], reverse=True)
+        
+        # Calculate overall statistics
+        total_employees = len(late_report)
+        employees_with_late = len([emp for emp in late_report if emp['late_days'] > 0])
+        total_late_incidents = sum(emp['late_days'] for emp in late_report)
+        total_late_minutes_all = sum(emp['total_late_minutes'] for emp in late_report)
+        
+        # Calculate average punctuality rate
+        avg_punctuality = 0
+        if total_employees > 0:
+            avg_punctuality = round(sum(emp['punctuality_rate'] for emp in late_report) / total_employees, 2)
+        
+        return JsonResponse({
+            'success': True,
+            'period': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'days': (end_date - start_date).days + 1
+            },
+            'summary': {
+                'total_employees': total_employees,
+                'employees_with_late': employees_with_late,
+                'total_late_incidents': total_late_incidents,
+                'total_late_minutes': total_late_minutes_all,
+                'total_late_hours': round(total_late_minutes_all / 60, 2),
+                'average_punctuality_rate': avg_punctuality,
+                'most_punctual_rate': max([emp['punctuality_rate'] for emp in late_report], default=0),
+                'least_punctual_rate': min([emp['punctuality_rate'] for emp in late_report], default=0)
+            },
+            'employees': late_report
+        })
+        
+    except ValueError:
+        return JsonResponse({
+            'success': False,
+            'message': 'Invalid date format. Use YYYY-MM-DD'
+        }, status=400)
+    except Exception as e:
+        print(f"Error generating late report: {str(e)}")
+        return JsonResponse({
+            'success': False,
+            'message': f'Error: {str(e)}'
+        }, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def export_late_report_csv(request):
+    """Export employee late report as CSV matching the frontend display format"""
+    try:
+        print(f"CSV Export Request received: {request.method} {request.get_full_path()}")
+        
+        # Load employee cache if empty
+        if not employee_cache:
+            load_employee_cache()
+        
+        # Get date parameters
+        start_date_str = request.GET.get('start_date')
+        end_date_str = request.GET.get('end_date')
+        
+        print(f"Date parameters: start_date={start_date_str}, end_date={end_date_str}")
+        
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        else:
+            # Default to last 7 days for better performance
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+        
+        # Limit date range to prevent timeouts (max 30 days)
+        max_days = 30
+        if (end_date - start_date).days > max_days:
+            print(f"Date range too large ({(end_date - start_date).days} days), limiting to {max_days} days")
+            start_date = end_date - timedelta(days=max_days)
+        
+        print(f"Exporting late report CSV from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        
+        # Get all attendance records for the period with optimized processing
+        print("Fetching attendance records...")
+        records = biotime_client.get_transactions_by_date_range(start_date, end_date)
+        print(f"Retrieved {len(records)} raw records")
+        
+        processed_records = process_attendance_records(records) if records else []
+        print(f"Processed {len(processed_records)} attendance records")
+        
+        # Calculate late statistics per employee with optimized processing
+        employee_late_stats = {}
+        
+        print("Calculating late statistics...")
+        for i, record in enumerate(processed_records):
+            if i % 100 == 0:  # Progress indicator
+                print(f"Processing record {i+1}/{len(processed_records)}")
+                
+            emp_id = record['employee_id']
+            emp_name = record['full_name']
+            late_minutes = record.get('late_minutes', 0)
+            
+            if emp_id not in employee_late_stats:
+                employee_late_stats[emp_id] = {
+                    'employee_id': emp_id,
+                    'full_name': emp_name,
+                    'total_days': 0,
+                    'late_days': 0,
+                    'total_late_minutes': 0,
+                    'average_late_minutes': 0,
+                    'punctuality_rate': 0,
+                    'late_incidents': []
+                }
+            
+            # Count this day
+            employee_late_stats[emp_id]['total_days'] += 1
+            
+            # If employee was late
+            if late_minutes > 0:
+                employee_late_stats[emp_id]['late_days'] += 1
+                employee_late_stats[emp_id]['total_late_minutes'] += late_minutes
+                employee_late_stats[emp_id]['late_incidents'].append({
+                    'date': record['date'],
+                    'clock_in': record['clock_in'],
+                    'late_minutes': late_minutes
+                })
+        
+        print("Calculating averages and rates...")
+        # Calculate averages and rates
+        for emp_id, stats in employee_late_stats.items():
+            if stats['total_days'] > 0:
+                stats['punctuality_rate'] = round(((stats['total_days'] - stats['late_days']) / stats['total_days']) * 100, 2)
+            
+            if stats['late_days'] > 0:
+                stats['average_late_minutes'] = round(stats['total_late_minutes'] / stats['late_days'], 2)
+        
+        # Convert to list and sort by total late minutes (worst first)
+        late_report = list(employee_late_stats.values())
+        late_report.sort(key=lambda x: x['total_late_minutes'], reverse=True)
+        
+        print(f"Generated late report for {len(late_report)} employees")
+        
+        # Calculate overall statistics matching the frontend display
+        total_employees = len(late_report)
+        employees_with_late = len([emp for emp in late_report if emp['late_days'] > 0])
+        total_late_incidents = sum(emp['late_days'] for emp in late_report)
+        total_late_minutes_all = sum(emp['total_late_minutes'] for emp in late_report)
+        total_late_hours = round(total_late_minutes_all / 60, 1)  # Match frontend format (53.2h)
+        
+        # Calculate average punctuality rate
+        avg_punctuality = 0
+        if total_employees > 0:
+            avg_punctuality = round(sum(emp['punctuality_rate'] for emp in late_report) / total_employees, 2)
+        
+        # Calculate report period days
+        period_days = (end_date - start_date).days + 1
+        
+        print("Generating CSV content...")
+        # Create CSV content matching the frontend format exactly
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Add title matching frontend
+        writer.writerow(["Employee Late Report"])
+        writer.writerow([])  # Empty row
+        
+        # Add summary statistics matching frontend cards
+        writer.writerow(["SUMMARY STATISTICS"])
+        writer.writerow(["Total Employees", total_employees])
+        writer.writerow(["Employees with Late", employees_with_late])
+        writer.writerow(["Avg Punctuality", f"{avg_punctuality}%"])
+        writer.writerow(["Total Late Hours", f"{total_late_hours}h"])
+        writer.writerow([])  # Empty row
+        
+        # Add report period info
+        writer.writerow(["Report Period", f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({period_days} days)"])
+        writer.writerow([])  # Empty row
+        
+        # Add employee data headers matching the frontend table exactly
+        writer.writerow([
+            "Rank",
+            "Employee", 
+            "Total Days", 
+            "Late Days", 
+            "Total Late (min)", 
+            "Avg Late (min)", 
+            "Punctuality %"
+        ])
+        
+        # Add employee data matching frontend format (limit to top 100 for performance)
+        top_employees = late_report[:100] if len(late_report) > 100 else late_report
+        for rank, employee in enumerate(top_employees, 1):
+            # Format rank with # prefix like frontend
+            rank_formatted = f"#{rank}"
+            
+            # Format punctuality percentage to match frontend (e.g., "16.67%", "40%")
+            punctuality_formatted = f"{employee['punctuality_rate']}%"
+            
+            # Format average late minutes to match frontend display
+            avg_late_formatted = employee['average_late_minutes']
+            if avg_late_formatted == int(avg_late_formatted):
+                avg_late_formatted = int(avg_late_formatted)
+            
+            writer.writerow([
+                rank_formatted,
+                employee['full_name'],
+                employee['total_days'],
+                employee['late_days'],
+                employee['total_late_minutes'],
+                avg_late_formatted,
+                punctuality_formatted
+            ])
+        
+        # Add detailed late incidents section (limit to recent 500 incidents for performance)
+        writer.writerow([])  # Empty row
+        writer.writerow(["DETAILED LATE INCIDENTS"])
+        writer.writerow([
+            "Employee Name",
+            "Employee ID",
+            "Date",
+            "Clock In Time",
+            "Late Minutes"
+        ])
+        
+        # Add all late incidents (limited for performance)
+        all_incidents = []
+        for employee in top_employees:
+            for incident in employee['late_incidents']:
+                all_incidents.append({
+                    'name': employee['full_name'],
+                    'id': employee['employee_id'],
+                    'date': incident['date'],
+                    'clock_in': incident['clock_in'],
+                    'late_minutes': incident['late_minutes']
+                })
+        
+        # Sort incidents by date (most recent first) and limit to 500
+        all_incidents.sort(key=lambda x: x['date'], reverse=True)
+        limited_incidents = all_incidents[:500]
+        
+        # Add incident data
+        for incident in limited_incidents:
+            writer.writerow([
+                incident['name'],
+                incident['id'],
+                incident['date'],
+                incident['clock_in'],
+                incident['late_minutes']
+            ])
+        
+        print(f"CSV content generated successfully with {len(limited_incidents)} incidents")
+        
+        # Create response
+        response = HttpResponse(
+            output.getvalue(),
+            content_type='text/csv; charset=utf-8'
+        )
+        response['Content-Disposition'] = f'attachment; filename="employee_late_report_{start_date.strftime("%Y%m%d")}_to_{end_date.strftime("%Y%m%d")}.csv"'
+        
+        print("CSV export completed successfully")
+        return response
+        
+    except ValueError as ve:
+        print(f"ValueError in CSV export: {str(ve)}")
+        return JsonResponse({
+            'success': False,
+            'message': 'Invalid date format. Use YYYY-MM-DD'
+        }, status=400)
+    except Exception as e:
+        print(f"Error exporting late report CSV: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({
+            'success': False,
+            'message': f'Export failed: {str(e)}'
+        }, status=500)
+
 
 # Export Functions
 

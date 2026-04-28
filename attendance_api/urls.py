@@ -24,6 +24,10 @@ urlpatterns = [
     path('attendance/export/excel/', views.export_attendance_excel, name='export_excel'),
     path('attendance/export/pdf/', views.export_attendance_pdf, name='export_pdf'),
     
+    # Late report endpoint
+    path('attendance/late-report/', views.get_employee_late_report, name='employee_late_report'),
+    path('attendance/late-report/export/csv/', views.export_late_report_csv, name='export_late_report_csv'),
+    
     # Debug endpoint
     path('debug/attendance-processing/', views.debug_attendance_processing, name='debug_attendance'),
     

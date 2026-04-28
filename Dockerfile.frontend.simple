@@ -1,16 +1,16 @@
-# Simpler frontend Dockerfile for Coolify
-FROM node:20-alpine AS builder
+# Simpler frontend Dockerfile for Coolify using Bun
+FROM oven/bun:1-alpine AS builder
 
 WORKDIR /app
 
 # Copy all frontend files
 COPY taf-attendance/ .
 
-# Install dependencies using npm (more compatible)
-RUN npm install
+# Install dependencies using Bun (much faster than npm)
+RUN bun install
 
-# Build the application
-RUN npm run build
+# Build the application using Bun
+RUN bun run build
 
 # Production stage
 FROM nginx:alpine

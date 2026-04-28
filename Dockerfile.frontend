@@ -1,32 +1,20 @@
-# Multi-stage build for React frontend
-FROM node:20-alpine AS builder
+# Multi-stage build for React frontend using Bun
+FROM oven/bun:1-alpine AS builder
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files (handle different package managers)
-COPY taf-attendance/package.json taf-attendance/package-lock.json* taf-attendance/pnpm-lock.yaml* ./
+# Copy package files
+COPY taf-attendance/package.json taf-attendance/bun.lockb* ./
 
-# Install pnpm
-RUN npm install -g pnpm@10.32.1
-
-# Install dependencies
-# Try pnpm first, fallback to npm if pnpm-lock.yaml doesn't exist
-RUN if [ -f pnpm-lock.yaml ]; then \
-        pnpm install --frozen-lockfile; \
-    else \
-        npm ci || npm install; \
-    fi
+# Install dependencies using Bun
+RUN bun install --frozen-lockfile
 
 # Copy source code
 COPY taf-attendance/ .
 
-# Build the application
-RUN if [ -f pnpm-lock.yaml ]; then \
-        pnpm run build; \
-    else \
-        npm run build; \
-    fi
+# Build the application using Bun
+RUN bun run build
 
 # Production stage with nginx
 FROM nginx:alpine

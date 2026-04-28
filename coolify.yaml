@@ -1,0 +1,81 @@
+# Coolify Configuration File
+# This file helps Coolify understand your application structure
+
+version: '1.0'
+
+# Application metadata
+app:
+  name: TAF Attendance System
+  description: Attendance Management System with ZKBio Time Integration
+  type: docker-compose
+  
+# Build configuration
+build:
+  compose_file: docker-compose.prod.yml
+  
+# Health checks
+health_checks:
+  frontend:
+    path: /
+    port: 80
+    interval: 30
+    timeout: 3
+    retries: 3
+    
+  backend:
+    path: /api/test-connection/
+    port: 8000
+    interval: 30
+    timeout: 10
+    retries: 3
+
+# Environment variables template
+environment:
+  required:
+    - BIOTIME_URL
+    - BIOTIME_USERNAME
+    - BIOTIME_PASSWORD
+    - POSTGRES_PASSWORD
+    - DJANGO_SECRET_KEY
+  
+  optional:
+    - POSTGRES_DB
+    - POSTGRES_USER
+    - DJANGO_DEBUG
+    - DJANGO_ALLOWED_HOSTS
+    - INTEGRATION_MODE
+    - SYNC_INTERVAL_MINUTES
+    - MAX_RETRIES
+    - BATCH_SIZE
+    - LOG_LEVEL
+    - VITE_API_URL
+
+# Volumes to persist
+volumes:
+  - postgres_data
+  - backend_logs
+
+# Ports to expose
+ports:
+  - 80:80  # Frontend
+  - 8000:8000  # Backend API (optional, can be internal only)
+
+# Resource limits (adjust based on your needs)
+resources:
+  backend:
+    memory: 512M
+    cpu: 0.5
+  
+  frontend:
+    memory: 256M
+    cpu: 0.25
+  
+  db:
+    memory: 512M
+    cpu: 0.5
+
+# Deployment strategy
+deployment:
+  strategy: rolling
+  max_unavailable: 0
+  max_surge: 1

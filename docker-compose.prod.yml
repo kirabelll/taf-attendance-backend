@@ -70,8 +70,8 @@ services:
   # React Frontend with Nginx
   frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.frontend.node
+      context: ./taf-attendance
+      dockerfile: Dockerfile
     restart: always
     depends_on:
       - backend

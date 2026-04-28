@@ -14,29 +14,37 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     postgresql-client \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    pip install gunicorn psycopg2-binary
 
 # Copy project files
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p logs
+RUN mkdir -p logs staticfiles media
 
 # Collect static files (if needed)
 RUN python manage.py collectstatic --noinput || true
+
+# Create a non-root user
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
 
 # Expose port
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api/test-connection/', timeout=5)" || exit 1
+    CMD curl -f http://localhost:8000/api/test-connection/ || exit 1
 
 # Run migrations and start server
 CMD python manage.py migrate --noinput && \
-    python manage.py runserver 0.0.0.0:8000
+    gunicorn taf_attendance.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120

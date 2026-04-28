@@ -4,20 +4,29 @@ FROM node:20-alpine AS builder
 # Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY taf-attendance/package*.json taf-attendance/pnpm-lock.yaml ./
+# Copy package files (handle different package managers)
+COPY taf-attendance/package.json taf-attendance/package-lock.json* taf-attendance/pnpm-lock.yaml* ./
 
 # Install pnpm
 RUN npm install -g pnpm@10.32.1
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# Try pnpm first, fallback to npm if pnpm-lock.yaml doesn't exist
+RUN if [ -f pnpm-lock.yaml ]; then \
+        pnpm install --frozen-lockfile; \
+    else \
+        npm ci || npm install; \
+    fi
 
 # Copy source code
 COPY taf-attendance/ .
 
 # Build the application
-RUN pnpm run build
+RUN if [ -f pnpm-lock.yaml ]; then \
+        pnpm run build; \
+    else \
+        npm run build; \
+    fi
 
 # Production stage with nginx
 FROM nginx:alpine

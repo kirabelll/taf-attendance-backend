@@ -71,7 +71,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend.simple
+      dockerfile: Dockerfile.frontend.node
     restart: always
     depends_on:
       - backend

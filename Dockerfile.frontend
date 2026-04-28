@@ -1,14 +1,14 @@
 # Multi-stage build for React frontend using Bun
-FROM oven/bun:1-alpine AS builder
+FROM oven/bun:1 AS builder
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY taf-attendance/package.json taf-attendance/bun.lockb* ./
+# Copy package files first for better caching
+COPY taf-attendance/package.json ./
 
 # Install dependencies using Bun
-RUN bun install --frozen-lockfile
+RUN bun install --verbose
 
 # Copy source code
 COPY taf-attendance/ .

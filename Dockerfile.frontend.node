@@ -1,19 +1,19 @@
-# Simpler frontend Dockerfile for Coolify using Bun
-FROM oven/bun:1 AS builder
+# Reliable frontend Dockerfile using Node.js and npm
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package.json first
-COPY taf-attendance/package.json ./
+# Copy package files
+COPY taf-attendance/package.json taf-attendance/package-lock.json* ./
 
-# Install dependencies using Bun
-RUN bun install --verbose
+# Install dependencies
+RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
-# Copy all frontend files
+# Copy source code
 COPY taf-attendance/ .
 
-# Build the application using Bun
-RUN bun run build
+# Build the application
+RUN npm run build
 
 # Production stage
 FROM nginx:alpine

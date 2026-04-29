@@ -123,6 +123,10 @@ STATIC_URL = 'static/'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
+    "http://172.16.10.168:8080",
+    "http://172.16.10.61:8080",
+    "http://localhost:5173",  # Vite dev server default
+    "http://127.0.0.1:5173",  # Vite dev server default
 ]
 
 CORS_ALLOW_CREDENTIALS = True

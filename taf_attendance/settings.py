@@ -121,7 +121,7 @@ STATIC_URL = 'static/'
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",
+    "http://localhost:8005",
     "http://127.0.0.1:8080",
     "http://172.16.10.168:8080",
     "http://172.16.10.61:8080",

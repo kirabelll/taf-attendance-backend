@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# TAF Attendance System - Ubuntu Server Deployment Script
-# This script deploys the application with auto-start on boot
+# TAF Attendance System - Root-Friendly Ubuntu Server Deployment
+# This script can be run as root and will handle user creation automatically
 
 set -e
 
@@ -21,56 +21,22 @@ NC='\033[0m' # No Color
 PROJECT_NAME="taf-attendance"
 PROJECT_DIR="/opt/taf-attendance"
 SERVICE_USER="taf-attendance"
+DEPLOY_USER="deploy"
 NGINX_AVAILABLE="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
 
-# Check if running as root
-if [[ $EUID -eq 0 ]]; then
-   echo -e "${YELLOW}⚠️  Running as root detected${NC}"
-   echo "For security reasons, this script will create a regular user to run the deployment."
-   echo ""
-   
-   # Create deployment user if it doesn't exist
-   if ! id "deploy" &>/dev/null; then
-       echo "Creating deployment user 'deploy'..."
-       useradd -m -s /bin/bash deploy
-       usermod -aG sudo deploy
-       echo "deploy ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/deploy
-       echo -e "${GREEN}✓ Deployment user 'deploy' created${NC}"
-   fi
-   
-   # Copy script to deploy user's home and run as deploy user
-   cp "$0" /home/deploy/deploy.sh
-   chown deploy:deploy /home/deploy/deploy.sh
-   chmod +x /home/deploy/deploy.sh
-   
-   echo "Switching to deployment user and continuing..."
-   echo ""
-   su - deploy -c "cd /home/deploy && ./deploy.sh"
-   exit $?
-fi
-
-# Check if user has sudo privileges
-if ! sudo -n true 2>/dev/null; then
-    echo -e "${RED}This script requires sudo privileges${NC}"
-    echo "Please ensure your user is in the sudo group:"
-    echo "  sudo usermod -aG sudo \$USER"
-    echo "Then log out and log back in, or run:"
-    echo "  su - \$USER"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Running with proper user privileges${NC}"
+echo -e "${GREEN}✓ Starting deployment as root${NC}"
+echo ""
 
 # Update system packages
 echo "Updating system packages..."
-sudo apt update && sudo apt upgrade -y
+apt update && apt upgrade -y
 echo -e "${GREEN}✓ System packages updated${NC}"
 echo ""
 
 # Install required system packages
 echo "Installing system dependencies..."
-sudo apt install -y \
+apt install -y \
     python3 \
     python3-pip \
     python3-venv \
@@ -86,17 +52,43 @@ sudo apt install -y \
     unzip \
     supervisor \
     certbot \
-    python3-certbot-nginx
+    python3-certbot-nginx \
+    htop \
+    ufw \
+    fail2ban
 
 echo -e "${GREEN}✓ System dependencies installed${NC}"
 echo ""
 
-# Install Bun (faster than npm)
+# Create deployment user if running as root
+if [[ $EUID -eq 0 ]]; then
+    if ! id "$DEPLOY_USER" &>/dev/null; then
+        echo "Creating deployment user '$DEPLOY_USER'..."
+        useradd -m -s /bin/bash $DEPLOY_USER
+        usermod -aG sudo $DEPLOY_USER
+        echo "$DEPLOY_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$DEPLOY_USER
+        echo -e "${GREEN}✓ Deployment user '$DEPLOY_USER' created${NC}"
+    else
+        echo -e "${GREEN}✓ Deployment user '$DEPLOY_USER' already exists${NC}"
+    fi
+fi
+
+# Install Bun for all users
 echo "Installing Bun..."
 if ! command -v bun &> /dev/null; then
-    curl -fsSL https://bun.sh/install | bash
-    export PATH="$HOME/.bun/bin:$PATH"
-    echo 'export PATH="$HOME/.bun/bin:$PATH"' >> ~/.bashrc
+    # Install Bun globally
+    curl -fsSL https://bun.sh/install | bash -s -- --global
+    
+    # Also install for deploy user
+    if [[ $EUID -eq 0 ]] && id "$DEPLOY_USER" &>/dev/null; then
+        sudo -u $DEPLOY_USER bash -c 'curl -fsSL https://bun.sh/install | bash'
+        echo 'export PATH="$HOME/.bun/bin:$PATH"' >> /home/$DEPLOY_USER/.bashrc
+    fi
+    
+    # Add to system PATH
+    echo 'export PATH="/root/.bun/bin:$PATH"' >> /etc/environment
+    export PATH="/root/.bun/bin:$PATH"
+    
     echo -e "${GREEN}✓ Bun installed${NC}"
 else
     echo -e "${GREEN}✓ Bun already installed${NC}"
@@ -106,7 +98,7 @@ echo ""
 # Create service user
 echo "Creating service user..."
 if ! id "$SERVICE_USER" &>/dev/null; then
-    sudo useradd --system --shell /bin/bash --home-dir $PROJECT_DIR --create-home $SERVICE_USER
+    useradd --system --shell /bin/bash --home-dir $PROJECT_DIR --create-home $SERVICE_USER
     echo -e "${GREEN}✓ Service user '$SERVICE_USER' created${NC}"
 else
     echo -e "${GREEN}✓ Service user '$SERVICE_USER' already exists${NC}"
@@ -115,8 +107,8 @@ echo ""
 
 # Setup PostgreSQL
 echo "Setting up PostgreSQL..."
-sudo systemctl start postgresql
-sudo systemctl enable postgresql
+systemctl start postgresql
+systemctl enable postgresql
 
 # Create database and user
 sudo -u postgres psql -c "CREATE DATABASE taf_attendance;" 2>/dev/null || echo "Database already exists"
@@ -131,8 +123,8 @@ echo ""
 
 # Setup Redis
 echo "Setting up Redis..."
-sudo systemctl start redis-server
-sudo systemctl enable redis-server
+systemctl start redis-server
+systemctl enable redis-server
 echo -e "${GREEN}✓ Redis configured${NC}"
 echo ""
 
@@ -140,20 +132,27 @@ echo ""
 echo "Deploying application..."
 
 # Create project directory
-sudo mkdir -p $PROJECT_DIR
-sudo chown $SERVICE_USER:$SERVICE_USER $PROJECT_DIR
+mkdir -p $PROJECT_DIR
+chown $SERVICE_USER:$SERVICE_USER $PROJECT_DIR
 
-# Copy application files
-echo "Copying application files..."
-sudo cp -r . $PROJECT_DIR/
-sudo chown -R $SERVICE_USER:$SERVICE_USER $PROJECT_DIR
+# Copy application files (assuming script is run from project directory)
+if [ -f "manage.py" ]; then
+    echo "Copying application files from current directory..."
+    cp -r . $PROJECT_DIR/
+    chown -R $SERVICE_USER:$SERVICE_USER $PROJECT_DIR
+else
+    echo "manage.py not found in current directory."
+    echo "Please ensure you're running this script from the TAF Attendance project directory."
+    echo "Or manually copy your project files to $PROJECT_DIR"
+    read -p "Press Enter to continue (assuming files are already in place)..."
+fi
 
 # Switch to project directory
 cd $PROJECT_DIR
 
 # Create production environment file
 echo "Creating production environment..."
-sudo -u $SERVICE_USER tee $PROJECT_DIR/.env > /dev/null <<EOF
+tee $PROJECT_DIR/.env > /dev/null <<EOF
 # Production Environment Configuration
 DEBUG=False
 ALLOWED_HOSTS=localhost,127.0.0.1,$(hostname -I | awk '{print $1}')
@@ -180,37 +179,46 @@ EMAIL_HOST_USER=your_email@gmail.com
 EMAIL_HOST_PASSWORD=your_app_password
 EOF
 
+chown $SERVICE_USER:$SERVICE_USER $PROJECT_DIR/.env
 echo -e "${GREEN}✓ Environment file created${NC}"
 echo ""
-
-# Validate required environment variables
-echo "Validating environment configuration..."
-source $PROJECT_DIR/.env
-
-echo -e "${YELLOW}⚠ IMPORTANT: Please update the following in $PROJECT_DIR/.env:${NC}"
-echo "  - BIOTIME_URL: Your ZKBio Time server URL"
-echo "  - BIOTIME_USERNAME: Your BioTime username"
-echo "  - BIOTIME_PASSWORD: Your BioTime password"
-echo ""
-read -p "Press Enter after you've updated the configuration..."
 
 # Setup Python virtual environment
 echo "Setting up Python environment..."
 sudo -u $SERVICE_USER python3 -m venv $PROJECT_DIR/venv
 sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install --upgrade pip
-sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install -r $PROJECT_DIR/requirements.txt
-sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install gunicorn psycopg2-binary redis celery
+
+# Install Python dependencies
+if [ -f "$PROJECT_DIR/requirements.txt" ]; then
+    sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install -r $PROJECT_DIR/requirements.txt
+fi
+
+# Install additional production packages
+sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install gunicorn psycopg2-binary redis celery django-redis
 
 echo -e "${GREEN}✓ Python environment configured${NC}"
 echo ""
 
 # Setup frontend
 echo "Setting up frontend..."
-cd $PROJECT_DIR/taf-attendance
-sudo -u $SERVICE_USER bun install
-sudo -u $SERVICE_USER bun run build
-
-echo -e "${GREEN}✓ Frontend built${NC}"
+if [ -d "$PROJECT_DIR/taf-attendance" ]; then
+    cd $PROJECT_DIR/taf-attendance
+    
+    # Make sure bun is available for service user
+    if command -v bun &> /dev/null; then
+        sudo -u $SERVICE_USER bun install
+        sudo -u $SERVICE_USER bun run build
+        echo -e "${GREEN}✓ Frontend built with Bun${NC}"
+    elif command -v npm &> /dev/null; then
+        sudo -u $SERVICE_USER npm install
+        sudo -u $SERVICE_USER npm run build
+        echo -e "${GREEN}✓ Frontend built with npm${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Neither Bun nor npm found, skipping frontend build${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  Frontend directory not found, skipping frontend build${NC}"
+fi
 echo ""
 
 # Setup Django
@@ -301,8 +309,8 @@ LOGGING = {
 EOF
 
 # Create log directory
-sudo mkdir -p /var/log/taf-attendance
-sudo chown $SERVICE_USER:$SERVICE_USER /var/log/taf-attendance
+mkdir -p /var/log/taf-attendance
+chown $SERVICE_USER:$SERVICE_USER /var/log/taf-attendance
 
 # Run Django setup
 export DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
@@ -313,8 +321,8 @@ echo -e "${GREEN}✓ Django configured${NC}"
 echo ""
 
 # Create systemd service for Django
-echo "Creating systemd service..."
-sudo tee /etc/systemd/system/taf-attendance.service > /dev/null <<EOF
+echo "Creating systemd services..."
+tee /etc/systemd/system/taf-attendance.service > /dev/null <<EOF
 [Unit]
 Description=TAF Attendance Django Application
 After=network.target postgresql.service redis.service
@@ -338,8 +346,8 @@ SyslogIdentifier=taf-attendance
 WantedBy=multi-user.target
 EOF
 
-# Create systemd service for Celery (background tasks)
-sudo tee /etc/systemd/system/taf-attendance-celery.service > /dev/null <<EOF
+# Create systemd service for Celery
+tee /etc/systemd/system/taf-attendance-celery.service > /dev/null <<EOF
 [Unit]
 Description=TAF Attendance Celery Worker
 After=network.target redis.service
@@ -364,18 +372,18 @@ WantedBy=multi-user.target
 EOF
 
 # Enable and start services
-sudo systemctl daemon-reload
-sudo systemctl enable taf-attendance
-sudo systemctl enable taf-attendance-celery
-sudo systemctl start taf-attendance
-sudo systemctl start taf-attendance-celery
+systemctl daemon-reload
+systemctl enable taf-attendance
+systemctl enable taf-attendance-celery
+systemctl start taf-attendance
+systemctl start taf-attendance-celery
 
 echo -e "${GREEN}✓ Systemd services created and started${NC}"
 echo ""
 
 # Configure Nginx
 echo "Configuring Nginx..."
-sudo tee $NGINX_AVAILABLE/taf-attendance > /dev/null <<EOF
+tee $NGINX_AVAILABLE/taf-attendance > /dev/null <<EOF
 server {
     listen 80;
     server_name _;
@@ -385,12 +393,6 @@ server {
     add_header X-Frame-Options DENY;
     add_header X-XSS-Protection "1; mode=block";
     add_header Referrer-Policy same-origin;
-    
-    # Gzip compression
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 1024;
-    gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
     
     # Static files
     location /static/ {
@@ -420,7 +422,6 @@ server {
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Accept, Authorization, Content-Type, X-CSRFToken" always;
         
-        # Handle preflight requests
         if (\$request_method = OPTIONS) {
             return 204;
         }
@@ -440,12 +441,6 @@ server {
     location / {
         root $PROJECT_DIR/taf-attendance/dist;
         try_files \$uri \$uri/ /index.html;
-        
-        # Cache static assets
-        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
-            expires 1y;
-            add_header Cache-Control "public, immutable";
-        }
     }
     
     # Health check
@@ -458,132 +453,59 @@ server {
 EOF
 
 # Enable Nginx site
-sudo ln -sf $NGINX_AVAILABLE/taf-attendance $NGINX_ENABLED/
-sudo rm -f $NGINX_ENABLED/default
+ln -sf $NGINX_AVAILABLE/taf-attendance $NGINX_ENABLED/
+rm -f $NGINX_ENABLED/default
 
 # Test and reload Nginx
-sudo nginx -t
-sudo systemctl enable nginx
-sudo systemctl restart nginx
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
 
 echo -e "${GREEN}✓ Nginx configured and started${NC}"
 echo ""
 
 # Setup firewall
 echo "Configuring firewall..."
-sudo ufw --force enable
-sudo ufw allow ssh
-sudo ufw allow 'Nginx Full'
-sudo ufw allow 80
-sudo ufw allow 443
+ufw --force enable
+ufw allow ssh
+ufw allow 'Nginx Full'
+ufw allow 80
+ufw allow 443
 
 echo -e "${GREEN}✓ Firewall configured${NC}"
-echo ""
-
-# Create backup script
-echo "Creating backup script..."
-sudo tee /usr/local/bin/taf-attendance-backup.sh > /dev/null <<EOF
-#!/bin/bash
-# TAF Attendance Backup Script
-
-BACKUP_DIR="/var/backups/taf-attendance"
-DATE=\$(date +%Y%m%d_%H%M%S)
-
-# Create backup directory
-mkdir -p \$BACKUP_DIR
-
-# Backup database
-sudo -u postgres pg_dump taf_attendance > \$BACKUP_DIR/database_\$DATE.sql
-
-# Backup application files
-tar -czf \$BACKUP_DIR/application_\$DATE.tar.gz -C $PROJECT_DIR .
-
-# Keep only last 7 days of backups
-find \$BACKUP_DIR -name "*.sql" -mtime +7 -delete
-find \$BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
-
-echo "Backup completed: \$DATE"
-EOF
-
-sudo chmod +x /usr/local/bin/taf-attendance-backup.sh
-
-# Setup daily backup cron job
-echo "0 2 * * * /usr/local/bin/taf-attendance-backup.sh" | sudo crontab -
-
-echo -e "${GREEN}✓ Backup system configured${NC}"
 echo ""
 
 # Create management scripts
 echo "Creating management scripts..."
 
 # Start script
-sudo tee /usr/local/bin/taf-attendance-start > /dev/null <<EOF
+tee /usr/local/bin/taf-attendance-start > /dev/null <<EOF
 #!/bin/bash
-sudo systemctl start postgresql redis-server taf-attendance taf-attendance-celery nginx
+systemctl start postgresql redis-server taf-attendance taf-attendance-celery nginx
 echo "TAF Attendance services started"
 EOF
 
 # Stop script
-sudo tee /usr/local/bin/taf-attendance-stop > /dev/null <<EOF
+tee /usr/local/bin/taf-attendance-stop > /dev/null <<EOF
 #!/bin/bash
-sudo systemctl stop taf-attendance taf-attendance-celery nginx
+systemctl stop taf-attendance taf-attendance-celery nginx
 echo "TAF Attendance services stopped"
 EOF
 
 # Status script
-sudo tee /usr/local/bin/taf-attendance-status > /dev/null <<EOF
+tee /usr/local/bin/taf-attendance-status > /dev/null <<EOF
 #!/bin/bash
 echo "=== TAF Attendance System Status ==="
 echo ""
-echo "Services:"
-sudo systemctl status postgresql --no-pager -l
-sudo systemctl status redis-server --no-pager -l
-sudo systemctl status taf-attendance --no-pager -l
-sudo systemctl status taf-attendance-celery --no-pager -l
-sudo systemctl status nginx --no-pager -l
-echo ""
-echo "Ports:"
-sudo netstat -tlnp | grep -E ':(80|443|5432|6379|8001)'
-EOF
-
-# Update script
-sudo tee /usr/local/bin/taf-attendance-update > /dev/null <<EOF
-#!/bin/bash
-echo "Updating TAF Attendance System..."
-
-# Stop services
-sudo systemctl stop taf-attendance taf-attendance-celery
-
-# Backup current version
-sudo -u $SERVICE_USER cp -r $PROJECT_DIR $PROJECT_DIR.backup.\$(date +%Y%m%d_%H%M%S)
-
-# Update code (assuming git repository)
-cd $PROJECT_DIR
-sudo -u $SERVICE_USER git pull
-
-# Update Python dependencies
-sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install -r requirements.txt
-
-# Update frontend
-cd $PROJECT_DIR/taf-attendance
-sudo -u $SERVICE_USER bun install
-sudo -u $SERVICE_USER bun run build
-
-# Run Django migrations
-cd $PROJECT_DIR
-export DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
-sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/python manage.py migrate
-sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/python manage.py collectstatic --noinput
-
-# Restart services
-sudo systemctl start taf-attendance taf-attendance-celery
-sudo systemctl reload nginx
-
-echo "Update completed successfully"
+systemctl status postgresql --no-pager -l
+systemctl status redis-server --no-pager -l
+systemctl status taf-attendance --no-pager -l
+systemctl status taf-attendance-celery --no-pager -l
+systemctl status nginx --no-pager -l
 EOF
 
 # Make scripts executable
-sudo chmod +x /usr/local/bin/taf-attendance-*
+chmod +x /usr/local/bin/taf-attendance-*
 
 echo -e "${GREEN}✓ Management scripts created${NC}"
 echo ""
@@ -592,18 +514,18 @@ echo ""
 echo "Checking service status..."
 sleep 5
 
-if sudo systemctl is-active --quiet taf-attendance; then
+if systemctl is-active --quiet taf-attendance; then
     echo -e "${GREEN}✓ Django service is running${NC}"
 else
     echo -e "${RED}✗ Django service failed to start${NC}"
-    sudo systemctl status taf-attendance --no-pager -l
+    systemctl status taf-attendance --no-pager -l
 fi
 
-if sudo systemctl is-active --quiet nginx; then
+if systemctl is-active --quiet nginx; then
     echo -e "${GREEN}✓ Nginx service is running${NC}"
 else
     echo -e "${RED}✗ Nginx service failed to start${NC}"
-    sudo systemctl status nginx --no-pager -l
+    systemctl status nginx --no-pager -l
 fi
 
 echo ""
@@ -612,34 +534,26 @@ echo -e "${GREEN}✓ Ubuntu Server Deployment Completed!${NC}"
 echo "================================================"
 echo ""
 echo -e "${BLUE}🌐 Access your application:${NC}"
-echo "  Frontend: http://$(hostname -I | awk '{print $1}')"
-echo "  Backend API: http://$(hostname -I | awk '{print $1}')/api"
-echo "  Django Admin: http://$(hostname -I | awk '{print $1}')/admin"
-echo "  Health Check: http://$(hostname -I | awk '{print $1}')/health"
+SERVER_IP=$(hostname -I | awk '{print $1}')
+echo "  Frontend: http://$SERVER_IP"
+echo "  Backend API: http://$SERVER_IP/api"
+echo "  Django Admin: http://$SERVER_IP/admin"
+echo "  Health Check: http://$SERVER_IP/health"
 echo ""
 echo -e "${BLUE}🔧 Management Commands:${NC}"
 echo "  Start services: taf-attendance-start"
 echo "  Stop services: taf-attendance-stop"
 echo "  Check status: taf-attendance-status"
-echo "  Update system: taf-attendance-update"
-echo "  Manual backup: /usr/local/bin/taf-attendance-backup.sh"
 echo ""
-echo -e "${BLUE}📋 Service Information:${NC}"
-echo "  Services auto-start on boot: ✓ Enabled"
-echo "  Daily backups: ✓ Configured (2:00 AM)"
-echo "  Firewall: ✓ Configured"
-echo "  SSL/HTTPS: Run 'sudo certbot --nginx' to enable"
-echo ""
-echo -e "${BLUE}📁 Important Paths:${NC}"
-echo "  Application: $PROJECT_DIR"
-echo "  Logs: /var/log/taf-attendance/"
-echo "  Backups: /var/backups/taf-attendance/"
-echo "  Nginx config: $NGINX_AVAILABLE/taf-attendance"
-echo ""
-echo -e "${YELLOW}⚠ Next Steps:${NC}"
+echo -e "${BLUE}📋 Next Steps:${NC}"
 echo "1. Update BioTime credentials in: $PROJECT_DIR/.env"
-echo "2. Create Django superuser: sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/python $PROJECT_DIR/manage.py createsuperuser"
-echo "3. Setup SSL certificate: sudo certbot --nginx"
-echo "4. Test the application thoroughly"
+echo "2. Create Django superuser:"
+echo "   sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/python $PROJECT_DIR/manage.py createsuperuser"
+echo "3. Setup SSL certificate: certbot --nginx"
+echo ""
+echo -e "${YELLOW}⚠ Important Files:${NC}"
+echo "  Environment: $PROJECT_DIR/.env"
+echo "  Logs: /var/log/taf-attendance/"
+echo "  Nginx config: $NGINX_AVAILABLE/taf-attendance"
 echo ""
 echo -e "${GREEN}🎉 Your TAF Attendance System is now running and will auto-start on boot!${NC}"

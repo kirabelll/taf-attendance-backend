@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# TAF Attendance System - Root-Friendly Ubuntu Server Deployment
-# This script can be run as root and will handle user creation automatically
+# TAF Attendance System - Simple Ubuntu Server Deployment
+# Uses npm instead of Bun for better compatibility
 
 set -e
 
 echo "================================================"
-echo "TAF Attendance System - Ubuntu Server Deployment"
+echo "TAF Attendance System - Simple Ubuntu Deployment"
 echo "================================================"
 echo ""
 
@@ -21,11 +21,10 @@ NC='\033[0m' # No Color
 PROJECT_NAME="taf-attendance"
 PROJECT_DIR="/opt/taf-attendance"
 SERVICE_USER="taf-attendance"
-DEPLOY_USER="deploy"
 NGINX_AVAILABLE="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
 
-echo -e "${GREEN}✓ Starting deployment as root${NC}"
+echo -e "${GREEN}✓ Starting simple deployment${NC}"
 echo ""
 
 # Update system packages
@@ -40,8 +39,6 @@ apt install -y \
     python3 \
     python3-pip \
     python3-venv \
-    nodejs \
-    npm \
     nginx \
     postgresql \
     postgresql-contrib \
@@ -54,66 +51,26 @@ apt install -y \
     certbot \
     python3-certbot-nginx \
     htop \
-    ufw \
-    fail2ban
+    ufw
 
 echo -e "${GREEN}✓ System dependencies installed${NC}"
 echo ""
 
-# Create deployment user if running as root
-if [[ $EUID -eq 0 ]]; then
-    if ! id "$DEPLOY_USER" &>/dev/null; then
-        echo "Creating deployment user '$DEPLOY_USER'..."
-        useradd -m -s /bin/bash $DEPLOY_USER
-        usermod -aG sudo $DEPLOY_USER
-        echo "$DEPLOY_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$DEPLOY_USER
-        echo -e "${GREEN}✓ Deployment user '$DEPLOY_USER' created${NC}"
-    else
-        echo -e "${GREEN}✓ Deployment user '$DEPLOY_USER' already exists${NC}"
-    fi
-fi
-
-# Install Bun for all users
-echo "Installing Bun..."
-if ! command -v bun &> /dev/null; then
-    # Install Bun with correct method
-    echo "Downloading and installing Bun..."
-    curl -fsSL https://bun.sh/install | bash
-    
-    # Add Bun to system PATH
-    if [ -f "/root/.bun/bin/bun" ]; then
-        export PATH="/root/.bun/bin:$PATH"
-        echo 'export PATH="/root/.bun/bin:$PATH"' >> /root/.bashrc
-        echo -e "${GREEN}✓ Bun installed for root${NC}"
-    fi
-    
-    # Also install for deploy user if it exists
-    if id "$DEPLOY_USER" &>/dev/null; then
-        echo "Installing Bun for deploy user..."
-        sudo -u $DEPLOY_USER bash -c 'curl -fsSL https://bun.sh/install | bash'
-        echo 'export PATH="$HOME/.bun/bin:$PATH"' >> /home/$DEPLOY_USER/.bashrc
-        echo -e "${GREEN}✓ Bun installed for $DEPLOY_USER${NC}"
-    fi
-    
-    echo -e "${GREEN}✓ Bun installation completed${NC}"
-else
-    echo -e "${GREEN}✓ Bun already installed${NC}"
-fi
-
-# Fallback to Node.js/npm if Bun installation fails
-if ! command -v bun &> /dev/null; then
-    echo -e "${YELLOW}⚠️  Bun installation failed, installing Node.js as fallback${NC}"
-    
-    # Install Node.js LTS
+# Install Node.js LTS (more reliable than Bun)
+echo "Installing Node.js..."
+if ! command -v node &> /dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
     apt-get install -y nodejs
-    
-    if command -v npm &> /dev/null; then
-        echo -e "${GREEN}✓ Node.js and npm installed as fallback${NC}"
-    else
-        echo -e "${RED}✗ Both Bun and Node.js installation failed${NC}"
-        echo "Please install Node.js manually or continue without frontend build"
-    fi
+    echo -e "${GREEN}✓ Node.js $(node --version) installed${NC}"
+else
+    echo -e "${GREEN}✓ Node.js $(node --version) already installed${NC}"
+fi
+
+if ! command -v npm &> /dev/null; then
+    apt-get install -y npm
+    echo -e "${GREEN}✓ npm $(npm --version) installed${NC}"
+else
+    echo -e "${GREEN}✓ npm $(npm --version) already installed${NC}"
 fi
 echo ""
 
@@ -162,9 +119,10 @@ if [ -f "manage.py" ]; then
     echo "Copying application files from current directory..."
     cp -r . $PROJECT_DIR/
     chown -R $SERVICE_USER:$SERVICE_USER $PROJECT_DIR
+    echo -e "${GREEN}✓ Application files copied${NC}"
 else
-    echo "manage.py not found in current directory."
-    echo "Please ensure you're running this script from the TAF Attendance project directory."
+    echo -e "${YELLOW}⚠️  manage.py not found in current directory${NC}"
+    echo "Please ensure you're running this script from the TAF Attendance project directory"
     echo "Or manually copy your project files to $PROJECT_DIR"
     read -p "Press Enter to continue (assuming files are already in place)..."
 fi
@@ -213,6 +171,7 @@ sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install --upgrade pip
 # Install Python dependencies
 if [ -f "$PROJECT_DIR/requirements.txt" ]; then
     sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install -r $PROJECT_DIR/requirements.txt
+    echo -e "${GREEN}✓ Python requirements installed${NC}"
 fi
 
 # Install additional production packages
@@ -221,30 +180,21 @@ sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/pip install gunicorn psycopg2-binary
 echo -e "${GREEN}✓ Python environment configured${NC}"
 echo ""
 
-# Setup frontend
-echo "Setting up frontend..."
+# Setup frontend with npm
+echo "Setting up frontend with npm..."
 if [ -d "$PROJECT_DIR/taf-attendance" ]; then
     cd $PROJECT_DIR/taf-attendance
     
-    # Try Bun first, then npm as fallback
-    if command -v bun &> /dev/null; then
-        echo "Building frontend with Bun..."
-        sudo -u $SERVICE_USER bash -c 'export PATH="/root/.bun/bin:$PATH" && bun install'
-        sudo -u $SERVICE_USER bash -c 'export PATH="/root/.bun/bin:$PATH" && bun run build'
-        echo -e "${GREEN}✓ Frontend built with Bun${NC}"
-    elif command -v npm &> /dev/null; then
-        echo "Building frontend with npm..."
-        sudo -u $SERVICE_USER npm install
-        sudo -u $SERVICE_USER npm run build
-        echo -e "${GREEN}✓ Frontend built with npm${NC}"
+    echo "Installing frontend dependencies..."
+    sudo -u $SERVICE_USER npm install
+    
+    echo "Building frontend for production..."
+    sudo -u $SERVICE_USER npm run build
+    
+    if [ -d "$PROJECT_DIR/taf-attendance/dist" ]; then
+        echo -e "${GREEN}✓ Frontend built successfully${NC}"
     else
-        echo -e "${YELLOW}⚠️  Neither Bun nor npm found${NC}"
-        echo "Frontend build skipped - you can build it manually later"
-        echo "Commands to run manually:"
-        echo "  cd $PROJECT_DIR/taf-attendance"
-        echo "  npm install && npm run build"
-        echo "  # or"
-        echo "  bun install && bun run build"
+        echo -e "${YELLOW}⚠️  Frontend build may have failed - dist directory not found${NC}"
     fi
 else
     echo -e "${YELLOW}⚠️  Frontend directory not found at $PROJECT_DIR/taf-attendance${NC}"
@@ -377,39 +327,12 @@ SyslogIdentifier=taf-attendance
 WantedBy=multi-user.target
 EOF
 
-# Create systemd service for Celery
-tee /etc/systemd/system/taf-attendance-celery.service > /dev/null <<EOF
-[Unit]
-Description=TAF Attendance Celery Worker
-After=network.target redis.service
-Wants=redis.service
-
-[Service]
-Type=exec
-User=$SERVICE_USER
-Group=$SERVICE_USER
-WorkingDirectory=$PROJECT_DIR
-Environment=DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
-ExecStart=$PROJECT_DIR/venv/bin/celery -A taf_attendance worker --loglevel=info
-ExecReload=/bin/kill -s HUP \$MAINPID
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=taf-attendance-celery
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 # Enable and start services
 systemctl daemon-reload
 systemctl enable taf-attendance
-systemctl enable taf-attendance-celery
 systemctl start taf-attendance
-systemctl start taf-attendance-celery
 
-echo -e "${GREEN}✓ Systemd services created and started${NC}"
+echo -e "${GREEN}✓ Django service created and started${NC}"
 echo ""
 
 # Configure Nginx
@@ -512,14 +435,14 @@ echo "Creating management scripts..."
 # Start script
 tee /usr/local/bin/taf-attendance-start > /dev/null <<EOF
 #!/bin/bash
-systemctl start postgresql redis-server taf-attendance taf-attendance-celery nginx
+systemctl start postgresql redis-server taf-attendance nginx
 echo "TAF Attendance services started"
 EOF
 
 # Stop script
 tee /usr/local/bin/taf-attendance-stop > /dev/null <<EOF
 #!/bin/bash
-systemctl stop taf-attendance taf-attendance-celery nginx
+systemctl stop taf-attendance nginx
 echo "TAF Attendance services stopped"
 EOF
 
@@ -531,7 +454,6 @@ echo ""
 systemctl status postgresql --no-pager -l
 systemctl status redis-server --no-pager -l
 systemctl status taf-attendance --no-pager -l
-systemctl status taf-attendance-celery --no-pager -l
 systemctl status nginx --no-pager -l
 EOF
 
@@ -549,6 +471,7 @@ if systemctl is-active --quiet taf-attendance; then
     echo -e "${GREEN}✓ Django service is running${NC}"
 else
     echo -e "${RED}✗ Django service failed to start${NC}"
+    echo "Checking logs..."
     systemctl status taf-attendance --no-pager -l
 fi
 
@@ -561,7 +484,7 @@ fi
 
 echo ""
 echo "================================================"
-echo -e "${GREEN}✓ Ubuntu Server Deployment Completed!${NC}"
+echo -e "${GREEN}✓ Simple Ubuntu Deployment Completed!${NC}"
 echo "================================================"
 echo ""
 echo -e "${BLUE}🌐 Access your application:${NC}"
@@ -582,9 +505,4 @@ echo "2. Create Django superuser:"
 echo "   sudo -u $SERVICE_USER $PROJECT_DIR/venv/bin/python $PROJECT_DIR/manage.py createsuperuser"
 echo "3. Setup SSL certificate: certbot --nginx"
 echo ""
-echo -e "${YELLOW}⚠ Important Files:${NC}"
-echo "  Environment: $PROJECT_DIR/.env"
-echo "  Logs: /var/log/taf-attendance/"
-echo "  Nginx config: $NGINX_AVAILABLE/taf-attendance"
-echo ""
-echo -e "${GREEN}🎉 Your TAF Attendance System is now running and will auto-start on boot!${NC}"
+echo -e "${GREEN}🎉 Your TAF Attendance System is now running with npm!${NC}"

@@ -37,11 +37,11 @@ ENV DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
 RUN python manage.py collectstatic --noinput
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8004
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/api/test-connection/ || exit 1
+    CMD curl -f http://localhost:8004/api/test-connection/ || exit 1
 
 # Start command
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "taf_attendance.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8004", "--workers", "3", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "taf_attendance.wsgi:application"]

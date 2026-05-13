@@ -16,7 +16,11 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) from exc
+    
+    # Set default port and allow network access
     runserver.default_port = '8004'
+    runserver.default_addr = '192.168.137.132'  # Listen on all network interfaces
+    
     execute_from_command_line(sys.argv)
 
 

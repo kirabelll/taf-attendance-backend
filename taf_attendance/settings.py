@@ -121,7 +121,7 @@ STATIC_URL = 'static/'
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8005",
+    "http://localhost:8080",
     "http://127.0.0.1:8080",
     "http://172.16.10.168:8080",
     "http://172.16.10.61:8080",
@@ -129,7 +129,18 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",  # Vite dev server default
 ]
 
+# Allow CORS for all origins in development (more permissive)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+
+# Additional CORS settings for network access
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://192\.168\.\d+\.\d+:8080$",  # Local network
+    r"^http://172\.16\.\d+\.\d+:8080$",   # Private network
+    r"^http://10\.\d+\.\d+\.\d+:8080$",   # Private network
+    r"^http://localhost:\d+$",            # Any localhost port
+    r"^http://127\.0\.0\.1:\d+$",         # Any 127.0.0.1 port
+]
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

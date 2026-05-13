@@ -79,8 +79,30 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            'timeout': 20,
+        }
     }
 }
+
+# Database connection pooling for production
+# Uncomment for PostgreSQL in production
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'taf_attendance',
+#         'USER': 'taf_user',
+#         'PASSWORD': 'taf_password_2024',
+#         'HOST': 'localhost',
+#         'PORT': '5432',
+#         'OPTIONS': {
+#             'MAX_CONNS': 20,
+#             'OPTIONS': {
+#                 'MAX_CONNS': 20,
+#             }
+#         }
+#     }
+# }
 
 
 # Password validation
@@ -121,7 +143,12 @@ STATIC_URL = 'static/'
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
+<<<<<<< HEAD
     "http://localhost:8080",
+=======
+    "http://localhost:8005",
+    "http://127.0.0.1:8005",  # Frontend Vite server
+>>>>>>> e59b52a9ca54cce2f46bcd9901a6e01b514500b1
     "http://127.0.0.1:8080",
     "http://172.16.10.168:8080",
     "http://172.16.10.61:8080",
@@ -133,6 +160,7 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
+<<<<<<< HEAD
 # Additional CORS settings for network access
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://192\.168\.\d+\.\d+:8080$",  # Local network
@@ -140,6 +168,29 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://10\.\d+\.\d+\.\d+:8080$",   # Private network
     r"^http://localhost:\d+$",            # Any localhost port
     r"^http://127\.0\.0\.1:\d+$",         # Any 127.0.0.1 port
+=======
+# Additional CORS settings for development
+CORS_ALLOW_ALL_ORIGINS = False  # Set to True only for development if needed
+CORS_ALLOWED_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+CORS_ALLOWED_METHODS = [
+    'DELETE',
+    'GET',
+    'OPTIONS',
+    'PATCH',
+    'POST',
+    'PUT',
+>>>>>>> e59b52a9ca54cce2f46bcd9901a6e01b514500b1
 ]
 
 # Default primary key field type

@@ -13,7 +13,18 @@ import DeviceStatus from "./pages/DeviceStatus";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
+<<<<<<< HEAD
 const queryClient = new QueryClient();
+=======
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
+>>>>>>> e59b52a9ca54cce2f46bcd9901a6e01b514500b1
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -21,7 +32,11 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
+<<<<<<< HEAD
         <BrowserRouter>
+=======
+        <BrowserRouter future={{ v7_relativeSplatPath: true }}>
+>>>>>>> e59b52a9ca54cce2f46bcd9901a6e01b514500b1
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/" element={<Dashboard />} />

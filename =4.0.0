@@ -1,0 +1,9 @@
+Collecting django-cors-headers
+  Downloading django_cors_headers-4.9.0-py3-none-any.whl.metadata (16 kB)
+Requirement already satisfied: asgiref>=3.6 in C:\Users\kirub\AppData\Local\Programs\Python\Python313\Lib\site-packages (from django-cors-headers) (3.11.1)
+Requirement already satisfied: django>=4.2 in C:\Users\kirub\AppData\Local\Programs\Python\Python313\Lib\site-packages (from django-cors-headers) (6.0.4)
+Requirement already satisfied: sqlparse>=0.5.0 in C:\Users\kirub\AppData\Local\Programs\Python\Python313\Lib\site-packages (from django>=4.2->django-cors-headers) (0.5.5)
+Requirement already satisfied: tzdata in C:\Users\kirub\AppData\Local\Programs\Python\Python313\Lib\site-packages (from django>=4.2->django-cors-headers) (2026.2)
+Downloading django_cors_headers-4.9.0-py3-none-any.whl (12 kB)
+Installing collected packages: django-cors-headers
+Successfully installed django-cors-headers-4.9.0

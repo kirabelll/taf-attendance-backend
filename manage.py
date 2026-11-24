@@ -19,7 +19,7 @@ def main():
     
     # Set default port and allow network access
     runserver.default_port = '8004'
-    runserver.default_addr = '192.168.137.132'  # Listen on all network interfaces
+    runserver.default_addr = '172.16.10.87'  # Listen on all network interfaces
     
     execute_from_command_line(sys.argv)
 

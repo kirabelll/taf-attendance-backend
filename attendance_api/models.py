@@ -2,6 +2,42 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.conf import settings
+import uuid
+
+
+class UserProfile(models.Model):
+    """Extended user profile with role-based access control"""
+    ROLE_CHOICES = [
+        ('viewer', 'Viewer'),
+        ('employee', 'Employee'),
+        ('hr', 'HR'),
+        ('manager', 'Manager'),
+        ('admin', 'Admin'),
+    ]
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='userprofile'
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='employee')
+    department = models.CharField(max_length=100, blank=True)
+    position = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    avatar_url = models.URLField(max_length=500, blank=True)
+    is_active = models.BooleanField(default=True)
+    last_login_ip = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.email} - {self.get_role_display()}"
+
+    class Meta:
+        db_table = 'user_profiles'
+        verbose_name = 'User Profile'
+        verbose_name_plural = 'User Profiles'
 
 
 class Employee(models.Model):
@@ -155,6 +191,40 @@ class DailyAttendanceSummary(models.Model):
         ]
 
 
+class AttendanceEntry(models.Model):
+    """Manual daily attendance status entry, separate from imported punches."""
+    STATUS_CHOICES = [
+        ("Present", "Present"),
+        ("Absent", "Absent"),
+        ("On Leave", "On Leave"),
+        ("Half Day", "Half Day"),
+    ]
+
+    series = models.CharField(max_length=40, unique=True, editable=False)
+    attendance_date = models.DateField()
+    employee_id = models.CharField(max_length=50)
+    employee_name = models.CharField(max_length=200)
+    company = models.CharField(max_length=140)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    created_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "attendance_entries"
+        ordering = ["-attendance_date", "employee_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["employee_id", "attendance_date"], name="unique_employee_attendance_entry_per_day")
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.series:
+            self.series = "HR-ATT-{0}-{1}".format(self.attendance_date.year, uuid.uuid4().hex[:8].upper())
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "{0} - {1} ({2})".format(self.series, self.employee_name, self.attendance_date)
+
+
 class AttendancePolicy(models.Model):
     """Attendance policy configuration"""
     name = models.CharField(max_length=100, unique=True)
@@ -162,7 +232,7 @@ class AttendancePolicy(models.Model):
     # Work schedule
     work_start_time = models.TimeField(default='08:00:00')
     work_end_time = models.TimeField(default='17:00:00')
-    late_threshold_minutes = models.IntegerField(default=30)  # Late after 30 minutes
+    late_threshold_minutes = models.IntegerField(default=15)  # 15-minute grace after 08:00
     early_departure_threshold_minutes = models.IntegerField(default=30)
     
     # Break configuration
@@ -236,6 +306,7 @@ class LeaveRequest(models.Model):
     days_count = models.IntegerField()
     reason = models.TextField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    is_paid = models.BooleanField(default=True)
     
     # Approval workflow
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)

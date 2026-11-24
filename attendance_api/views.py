@@ -2,7 +2,7 @@
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import sys
 import os
 import csv
@@ -14,6 +14,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from biotime_client import BioTimeClient
 from config import Config
+from .models import AttendanceEntry, LeaveRequest
+from django.utils import timezone
 
 # Initialize BioTime client
 biotime_client = BioTimeClient()
@@ -76,6 +78,9 @@ def get_log_type(record):
     """Determine log type: Clock In, Clock Out, or Late (M)"""
     punch_time = record['timestamp']
     punch_type = record.get('punch_type', '')
+
+    if punch_type in ['Lunch Out', 'Lunch In']:
+        return punch_type
     
     # First, check the actual punch type from ZKBioTime
     if punch_type in ['Check Out', 'OUT', 'Clock Out', '1', 'Auto Check Out']:
@@ -120,12 +125,27 @@ def process_attendance_records(records):
     
     # Sort records by timestamp to process them in chronological order
     sorted_records = sorted(records, key=lambda x: x['timestamp'])
+
+    # The first punch in the lunch window is Lunch Out; the next is Lunch In.
+    # Pair additional punches in order as well, instead of treating them as
+    # the employee's first check-in or final checkout.
+    lunch_groups = {}
+    lunch_start = time(11, 30)
+    lunch_end = time(13, 30)
+    for punch in sorted_records:
+        punch_time = punch['timestamp']
+        if lunch_start <= punch_time.time() <= lunch_end:
+            group_key = (punch.get('employee_id', ''), punch_time.strftime('%Y-%m-%d'))
+            lunch_groups.setdefault(group_key, []).append(punch)
+    for lunch_punches in lunch_groups.values():
+        for index, punch in enumerate(lunch_punches):
+            punch['_attendance_log_type'] = 'Lunch Out' if index % 2 == 0 else 'Lunch In'
     
     for record in sorted_records:
         emp_id = record['employee_id']
         emp_name = record.get('employee_name') or get_employee_name(emp_id)
         punch_time = record['timestamp']
-        log_type = get_log_type(record)
+        log_type = record.get('_attendance_log_type') or get_log_type(record)
         late_minutes = calculate_late_minutes(punch_time) if log_type == 'Late (M)' else 0
         
         date_key = punch_time.strftime('%Y-%m-%d')
@@ -143,6 +163,8 @@ def process_attendance_records(records):
                 'total_time_hours': 0,
                 'duty_time_hours': 0,
                 'working_hours': 0,
+                'lunch_break_hours': 0,
+                'lunch_punches': [],
                 'all_punches': [],  # Track all punches for debugging
                 'clock_in_time': None,  # Store as datetime for comparison
                 'clock_out_time': None  # Store as datetime for comparison
@@ -155,6 +177,12 @@ def process_attendance_records(records):
             'raw_type': record.get('punch_type', 'Unknown'),
             'timestamp': punch_time
         })
+
+        if log_type in ['Lunch Out', 'Lunch In']:
+            daily_records[key]['lunch_punches'].append({
+                'time': punch_time.strftime('%H:%M:%S'),
+                'type': log_type,
+            })
         
         # Update record with punch data - use earliest clock in and latest clock out
         if log_type in ['Clock In', 'Late (M)']:
@@ -176,6 +204,31 @@ def process_attendance_records(records):
             daily_records[key]['total_time_hours'] = record['total_time_hours']
         if 'duty_time_hours' in record:
             daily_records[key]['duty_time_hours'] = record['duty_time_hours']
+
+    # The final punch of the day is the checkout, even when BioTime labels
+    # the raw punch state incorrectly or uses an automatic/unknown punch code.
+    for record in daily_records.values():
+        punches = record['all_punches']
+        work_punches = [punch for punch in punches if punch['type'] not in ['Lunch Out', 'Lunch In']]
+        if len(work_punches) > 1:
+            first_punch = min(work_punches, key=lambda punch: punch['timestamp'])['timestamp']
+            last_punch = max(work_punches, key=lambda punch: punch['timestamp'])['timestamp']
+            record['clock_in'] = first_punch.strftime('%H:%M:%S')
+            record['clock_in_time'] = first_punch
+            record['late_minutes'] = calculate_late_minutes(first_punch)
+            record['clock_out'] = last_punch.strftime('%H:%M:%S')
+            record['clock_out_time'] = last_punch
+
+        lunch_out_time = None
+        lunch_duration = timedelta(0)
+        for punch in punches:
+            if punch['type'] == 'Lunch Out':
+                lunch_out_time = punch['timestamp']
+            elif punch['type'] == 'Lunch In' and lunch_out_time:
+                if punch['timestamp'] > lunch_out_time:
+                    lunch_duration += punch['timestamp'] - lunch_out_time
+                lunch_out_time = None
+        record['lunch_break_hours'] = round(lunch_duration.total_seconds() / 3600, 2)
     
     # Calculate working hours for records that have both clock in and out
     for record in daily_records.values():
@@ -191,8 +244,8 @@ def process_attendance_records(records):
                     if clock_out_time < clock_in_time:
                         clock_out_time += timedelta(days=1)
                     
-                    working_duration = clock_out_time - clock_in_time
-                    record['working_hours'] = round(working_duration.total_seconds() / 3600, 2)
+                    working_duration = clock_out_time - clock_in_time - timedelta(hours=record['lunch_break_hours'])
+                    record['working_hours'] = round(max(0, working_duration.total_seconds()) / 3600, 2)
                 else:
                     # Still working - calculate hours so far (only for today)
                     record_date = datetime.strptime(record['date'], '%Y-%m-%d').date()
@@ -201,8 +254,8 @@ def process_attendance_records(records):
                     if record_date == today:
                         # Calculate hours worked so far today
                         now = datetime.now()
-                        working_duration = now - clock_in_time
-                        record['working_hours'] = round(working_duration.total_seconds() / 3600, 2)
+                        working_duration = now - clock_in_time - timedelta(hours=record['lunch_break_hours'])
+                        record['working_hours'] = round(max(0, working_duration.total_seconds()) / 3600, 2)
                         record['status_note'] = 'Currently Working'
                     else:
                         # Past date without clock out - unknown hours
@@ -249,25 +302,73 @@ def test_connection(request):
             'message': f'Connection error: {str(e)}'
         }, status=500)
 
+def get_department_name(department):
+    """Extract department name from department object or string"""
+    if isinstance(department, dict):
+        return department.get('dept_name', department.get('dept_code', 'Unknown'))
+    return str(department) if department else 'Unknown'
+
+def get_area_names(area):
+    """Extract area names from area array"""
+    if isinstance(area, list):
+        return ', '.join([a.get('area_name', a.get('area_code', 'Unknown')) for a in area])
+    return str(area) if area else 'Unknown'
+
 @csrf_exempt
 @require_http_methods(["GET"])
 def get_employees(request):
-    """Get all employees"""
+    """Get all employees with full details from BioTime"""
     try:
         employees = biotime_client.get_employees(page_size=1000)
-        
+
         if employees:
             employee_list = []
             for emp in employees:
+                dept = emp.get('department', {})
+                area = emp.get('area', [])
                 employee_list.append({
                     'employee_id': emp.get('emp_code', ''),
                     'first_name': emp.get('first_name', ''),
-                    'last_name': emp.get('last_name', ''),
-                    'full_name': f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
-                    'department': emp.get('department', ''),
-                    'position': emp.get('position', '')
+                    'last_name': emp.get('last_name', '') or '',
+                    'full_name': f"{emp.get('first_name', '')} {emp.get('last_name', '') or ''}".strip(),
+                    'department': get_department_name(dept),
+                    'position': emp.get('position', '') or 'Not specified',
+                    # Additional fields from BioTime
+                    'bio_time_id': emp.get('id', ''),
+                    'nickname': emp.get('nickname', ''),
+                    'card_no': emp.get('card_no', ''),
+                    'hire_date': emp.get('hire_date', ''),
+                    'gender': emp.get('gender', ''),
+                    'birthday': emp.get('birthday', ''),
+                    'contact_tel': emp.get('contact_tel', ''),
+                    'office_tel': emp.get('office_tel', ''),
+                    'mobile': emp.get('mobile', ''),
+                    'email': emp.get('email', ''),
+                    'national': emp.get('national', ''),
+                    'city': emp.get('city', ''),
+                    'address': emp.get('address', ''),
+                    'postcode': emp.get('postcode', ''),
+                    'ssn': emp.get('ssn', ''),
+                    'religion': emp.get('religion', ''),
+                    'emp_type': emp.get('emp_type', ''),
+                    'verify_mode': emp.get('verify_mode', 0),
+                    'enroll_sn': emp.get('enroll_sn', ''),
+                    'dev_privilege': emp.get('dev_privilege', 0),
+                    'app_status': emp.get('app_status', 0),
+                    'app_role': emp.get('app_role', 1),
+                    'update_time': emp.get('update_time', ''),
+                    'enable_att': emp.get('enable_att', True),
+                    'enable_overtime': emp.get('enable_overtime', False),
+                    'enable_holiday': emp.get('enable_holiday', True),
+                    'department_obj': dept,
+                    'area': get_area_names(area),
+                    'area_obj': area,
+                    'fingerprint': emp.get('fingerprint', '-'),
+                    'face': emp.get('face', '-'),
+                    'palm': emp.get('palm', '-'),
+                    'vl_face': emp.get('vl_face', 0),
                 })
-            
+
             return JsonResponse({
                 'success': True,
                 'count': len(employee_list),
@@ -283,6 +384,115 @@ def get_employees(request):
             'success': False,
             'message': f'Error: {str(e)}'
         }, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def get_employee_leave(request, employee_id):
+    """Return leave requests and approved/pending day totals for an employee."""
+    labels = {
+        "vacation": "Annual Leave",
+        "sick": "Sick Leave",
+        "personal": "Personal Leave",
+        "emergency": "Emergency Leave",
+        "maternity": "Maternity Leave",
+        "paternity": "Paternity Leave",
+    }
+    requests = list(LeaveRequest.objects.filter(employee_id=employee_id).order_by("-start_date", "-created_at"))
+    summary = {
+        "annual_leave": {"approved_days": 0, "pending_days": 0, "request_count": 0},
+        "sick_leave": {"approved_days": 0, "pending_days": 0, "request_count": 0},
+    }
+    leave_rows = []
+    for leave in requests:
+        if leave.leave_type == "vacation":
+            category = summary["annual_leave"]
+        elif leave.leave_type == "sick":
+            category = summary["sick_leave"]
+        else:
+            category = None
+        if category is not None:
+            category["request_count"] += 1
+            if leave.status == "approved":
+                category["approved_days"] += leave.days_count
+            elif leave.status == "pending":
+                category["pending_days"] += leave.days_count
+        leave_rows.append({
+            "id": leave.pk,
+            "type": labels.get(leave.leave_type, leave.get_leave_type_display()),
+            "status": leave.status.title(),
+            "is_paid": leave.is_paid,
+            "start_date": leave.start_date.isoformat(),
+            "end_date": leave.end_date.isoformat(),
+            "days": leave.days_count,
+        })
+
+    today = timezone.localdate()
+    active_leave = next((leave for leave in requests
+        if leave.status == "approved" and leave.start_date <= today <= leave.end_date), None)
+    pending_leave = next((leave for leave in requests
+        if leave.status == "pending" and leave.start_date <= today <= leave.end_date), None)
+    current_leave = active_leave or pending_leave
+    current_status = "On Leave" if active_leave else "Pending Approval" if pending_leave else "Not on Leave"
+
+    return JsonResponse({
+        "success": True,
+        "today": today.isoformat(),
+        "current_leave_status": {
+            "status": current_status,
+            "type": labels.get(current_leave.leave_type, current_leave.get_leave_type_display()) if current_leave else None,
+            "is_paid": current_leave.is_paid if current_leave else None,
+            "start_date": current_leave.start_date.isoformat() if current_leave else None,
+            "end_date": current_leave.end_date.isoformat() if current_leave else None,
+        },
+        "summary": summary,
+        "requests": leave_rows,
+    })
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def create_attendance_entry(request):
+    """Save a manually entered daily attendance status."""
+    try:
+        data = json.loads(request.body or b"{}")
+        if not isinstance(data, dict):
+            raise ValueError("Request body must be an object")
+        attendance_date = datetime.strptime(str(data.get("attendance_date", "")), "%Y-%m-%d").date()
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return JsonResponse({"success": False, "message": "Provide a valid attendance_date in YYYY-MM-DD format"}, status=400)
+
+    employee_id = str(data.get("employee_id", "")).strip()
+    employee_name = str(data.get("employee_name", "")).strip()
+    company = str(data.get("company", "")).strip()
+    status = str(data.get("status", "")).strip()
+    allowed_statuses = {value for value, _label in AttendanceEntry.STATUS_CHOICES}
+    if not employee_id or not employee_name or not company or status not in allowed_statuses:
+        return JsonResponse({"success": False, "message": "Employee, company, date, and a valid status are required"}, status=400)
+
+    if AttendanceEntry.objects.filter(employee_id=employee_id, attendance_date=attendance_date).exists():
+        return JsonResponse({"success": False, "message": "An attendance entry already exists for this employee and date"}, status=409)
+
+    entry = AttendanceEntry.objects.create(
+        attendance_date=attendance_date,
+        employee_id=employee_id,
+        employee_name=employee_name,
+        company=company,
+        status=status,
+        created_by=request.user,
+    )
+    return JsonResponse({
+        "success": True,
+        "message": "Attendance entry saved",
+        "entry": {
+            "series": entry.series,
+            "attendance_date": entry.attendance_date.isoformat(),
+            "employee_id": entry.employee_id,
+            "employee_name": entry.employee_name,
+            "company": entry.company,
+            "status": entry.status,
+        },
+    }, status=201)
 
 @csrf_exempt
 @require_http_methods(["GET"])
@@ -327,6 +537,41 @@ def get_realtime_attendance(request):
             'success': False,
             'message': f'Error: {str(e)}'
         }, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def get_daily_punches(request):
+    """Return every raw device punch for a selected calendar date."""
+    date_text = request.GET.get('date') or datetime.now().strftime('%Y-%m-%d')
+    try:
+        punch_date = datetime.strptime(date_text, '%Y-%m-%d').date()
+    except ValueError:
+        return JsonResponse({"success": False, "message": "Date must use YYYY-MM-DD format"}, status=400)
+
+    start = datetime.combine(punch_date, time.min)
+    end = datetime.combine(punch_date, time.max)
+    try:
+        raw_records = biotime_client.get_raw_transactions_by_date_range(start, end)
+    except Exception:
+        return JsonResponse({"success": False, "message": "Could not fetch raw BioTime punches"}, status=502)
+
+    punches = [{
+        "transaction_id": str(record.get("transaction_id") or ""),
+        "employee_id": str(record.get("employee_id") or ""),
+        "employee_name": record.get("employee_name") or get_employee_name(str(record.get("employee_id") or "")),
+        "device_id": str(record.get("device_id") or "Unknown"),
+        "punch_time": record["timestamp"].isoformat(),
+        "punch_type": record.get("punch_type") or "Unknown",
+        "raw_punch_state": str(record.get("raw_punch_state") or ""),
+    } for record in raw_records]
+
+    return JsonResponse({
+        "success": True,
+        "date": punch_date.isoformat(),
+        "count": len(punches),
+        "punches": punches,
+    })
 
 @csrf_exempt
 @require_http_methods(["GET"])
@@ -378,6 +623,33 @@ def get_attendance_by_date(request):
                     all_employees.append((emp_id, emp_data.get('full_name', 'Unknown')))
                 else:
                     all_employees.append((emp_id, str(emp_data)))
+
+        # Approved leave days should not be counted as absences in date and
+        # monthly reports. Keep BioTime punches authoritative when present.
+        range_start = start_date.date() if isinstance(start_date, datetime) else start_date
+        range_end = end_date.date() if isinstance(end_date, datetime) else end_date
+        approved_leave_days = {}
+        leave_rows = LeaveRequest.objects.filter(
+            status='approved', start_date__lte=range_end, end_date__gte=range_start
+        ).values('employee_id', 'start_date', 'end_date', 'is_paid', 'leave_type')
+        for leave in leave_rows:
+            leave_date = max(leave['start_date'], range_start)
+            leave_end = min(leave['end_date'], range_end)
+            while leave_date <= leave_end:
+                approved_leave_days[(str(leave['employee_id']), leave_date.strftime('%Y-%m-%d'))] = {
+                    'is_paid': leave['is_paid'],
+                    'leave_type': leave['leave_type'],
+                }
+                leave_date += timedelta(days=1)
+
+        attendance_entry_rows = list(AttendanceEntry.objects.filter(attendance_date__range=(range_start, range_end)))
+        attendance_entries = {}
+        known_employee_ids = {str(emp_id) for emp_id, _ in all_employees}
+        for entry in attendance_entry_rows:
+            attendance_entries[(entry.employee_id, entry.attendance_date.strftime('%Y-%m-%d'))] = entry.status
+            if entry.employee_id not in known_employee_ids:
+                all_employees.append((entry.employee_id, entry.employee_name))
+                known_employee_ids.add(entry.employee_id)
         
         present_employee_ids = {r['employee_id'] for r in processed_records}
         
@@ -392,6 +664,7 @@ def get_attendance_by_date(request):
             # Add absent employees for this date
             for emp_id, emp_name in all_employees:
                 if emp_id not in date_present_ids:
+                    leave = approved_leave_days.get((str(emp_id), date_key))
                     processed_records.append({
                         'employee_id': emp_id,
                         'full_name': emp_name,
@@ -400,7 +673,9 @@ def get_attendance_by_date(request):
                         'clock_out': None,
                         'late_minutes': 0,
                         'device_id': 'N/A',
-                        'status': 'Absent',
+                        'status': ('Paid Leave' if leave['is_paid'] else 'Unpaid Leave') if leave else 'Absent',
+                        'leave_type': leave['leave_type'] if leave else None,
+                        'is_paid_leave': leave['is_paid'] if leave else None,
                         'working_hours': 0
                     })
             
@@ -415,6 +690,11 @@ def get_attendance_by_date(request):
                     record['status'] = 'Late'
                 else:
                     record['status'] = 'On Time'
+
+            entry_status = attendance_entries.get((str(record['employee_id']), record['date']))
+            if entry_status:
+                record['attendance_entry_status'] = entry_status
+                record['status'] = entry_status
         
         # Apply filters
         filtered_records = processed_records
@@ -434,13 +714,15 @@ def get_attendance_by_date(request):
             elif status_filter == 'absent':
                 filtered_records = [r for r in filtered_records if r['status'] == 'Absent']
             elif status_filter == 'present':
-                filtered_records = [r for r in filtered_records if r['status'] in ['Late', 'On Time']]
+                filtered_records = [r for r in filtered_records if r['status'] in ['Late', 'On Time', 'Paid Leave', 'Present', 'Half Day']]
             elif status_filter == 'on_time':
                 filtered_records = [r for r in filtered_records if r['status'] == 'On Time']
+            elif status_filter == 'on_leave':
+                filtered_records = [r for r in filtered_records if r['status'] in ['On Leave', 'Paid Leave', 'Unpaid Leave']]
         
         # Calculate statistics
         total_employees = len(all_employees)
-        present_count = len([r for r in processed_records if r['status'] in ['Late', 'On Time']])
+        present_count = len([r for r in processed_records if r['status'] in ['Late', 'On Time', 'Paid Leave', 'Present', 'Half Day']])
         late_count = len([r for r in processed_records if r['status'] == 'Late'])
         absent_count = len([r for r in processed_records if r['status'] == 'Absent'])
         on_time_count = len([r for r in processed_records if r['status'] == 'On Time'])

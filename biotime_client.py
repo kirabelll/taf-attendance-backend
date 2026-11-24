@@ -3,6 +3,23 @@ import requests
 from datetime import datetime, timedelta
 from config import Config
 
+
+def _parse_timecard_punch(date_value, time_value):
+    """Parse BioTime time-card values that may be HH:MM or HH:MM:SS."""
+    if isinstance(time_value, datetime):
+        return time_value
+    if not date_value or not time_value:
+        return None
+    date_text = date_value.strftime('%Y-%m-%d') if hasattr(date_value, 'strftime') else str(date_value)[:10]
+    time_text = str(time_value).strip()
+    for time_format in ('%H:%M:%S', '%H:%M', '%I:%M:%S %p', '%I:%M %p'):
+        try:
+            parsed_time = datetime.strptime(time_text, time_format).time()
+            return datetime.combine(datetime.strptime(date_text, '%Y-%m-%d').date(), parsed_time)
+        except ValueError:
+            continue
+    return None
+
 class BioTimeClient:
     """Client for ZKBio Time 9.0 API"""
     
@@ -215,38 +232,48 @@ class BioTimeClient:
             # First try to get detailed time card data
             time_card_data = self.get_total_time_card_data(start_date, end_date)
             if time_card_data:
-                # Convert time card data to transaction format for compatibility
+                # Preserve the time-card totals, but use raw punches when
+                # available so lunch breaks and the final daily punch can be
+                # classified accurately by the attendance processor.
+                card_by_employee_date = {}
+                for tc_record in time_card_data:
+                    record_date = tc_record.get('date')
+                    if hasattr(record_date, 'strftime'):
+                        record_date = record_date.strftime('%Y-%m-%d')
+                    elif record_date:
+                        record_date = str(record_date)[:10]
+                    if record_date and tc_record.get('employee_id'):
+                        card_by_employee_date[(str(tc_record['employee_id']), record_date)] = tc_record
+
+                raw_records = self._get_all_transactions_paginated(start_date, end_date)
+                if raw_records:
+                    for punch in raw_records:
+                        card = card_by_employee_date.get((
+                            str(punch.get('employee_id', '')),
+                            punch['timestamp'].strftime('%Y-%m-%d'),
+                        ))
+                        if card:
+                            punch['total_time_hours'] = card.get('total_time_hours', 0)
+                            punch['duty_time_hours'] = card.get('duty_time_hours', 0)
+                    return raw_records
+
+                # Fall back to time-card endpoints when raw transactions are
+                # unavailable; parse both HH:MM and HH:MM:SS values.
                 records = []
                 for tc_record in time_card_data:
-                    if tc_record['clock_in']:
-                        try:
-                            clock_in_time = datetime.strptime(f"{tc_record['date']} {tc_record['clock_in']}", '%Y-%m-%d %H:%M:%S')
-                            records.append({
-                                'employee_id': tc_record['employee_id'],
-                                'employee_name': tc_record['employee_name'],
-                                'timestamp': clock_in_time,
-                                'punch_type': 'Check In',
-                                'device_id': tc_record['device_id'],
-                                'total_time_hours': tc_record.get('total_time_hours', 0),
-                                'duty_time_hours': tc_record.get('duty_time_hours', 0),
-                            })
-                        except:
-                            pass
-                    
-                    if tc_record['clock_out']:
-                        try:
-                            clock_out_time = datetime.strptime(f"{tc_record['date']} {tc_record['clock_out']}", '%Y-%m-%d %H:%M:%S')
-                            records.append({
-                                'employee_id': tc_record['employee_id'],
-                                'employee_name': tc_record['employee_name'],
-                                'timestamp': clock_out_time,
-                                'punch_type': 'Check Out',
-                                'device_id': tc_record['device_id'],
-                                'total_time_hours': tc_record.get('total_time_hours', 0),
-                                'duty_time_hours': tc_record.get('duty_time_hours', 0),
-                            })
-                        except:
-                            pass
+                    for field, punch_type in (('clock_in', 'Check In'), ('clock_out', 'Check Out')):
+                        punch_time = _parse_timecard_punch(tc_record.get('date'), tc_record.get(field))
+                        if not punch_time:
+                            continue
+                        records.append({
+                            'employee_id': tc_record.get('employee_id', ''),
+                            'employee_name': tc_record.get('employee_name', ''),
+                            'timestamp': punch_time,
+                            'punch_type': punch_type,
+                            'device_id': tc_record.get('device_id', ''),
+                            'total_time_hours': tc_record.get('total_time_hours', 0),
+                            'duty_time_hours': tc_record.get('duty_time_hours', 0),
+                        })
                 
                 return records
             
@@ -324,6 +351,7 @@ class BioTimeClient:
                             punch_type = f'Unknown ({punch_state})'
                         
                         record = {
+                            'transaction_id': trans.get('id', trans.get('transaction_id', '')),
                             'employee_id': trans.get('emp_code', ''),
                             'employee_name': trans.get('emp_name', ''),
                             'timestamp': punch_time,
@@ -359,3 +387,9 @@ class BioTimeClient:
         
         print(f"Total transactions fetched: {len(all_records)}")
         return all_records
+
+    def get_raw_transactions_by_date_range(self, start_date, end_date):
+        """Fetch every raw BioTime punch without time-card aggregation."""
+        if not self.token and not self.authenticate():
+            raise RuntimeError("BioTime authentication failed")
+        return self._get_all_transactions_paginated(start_date, end_date)

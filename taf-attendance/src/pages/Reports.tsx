@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import AppLayout from "@/components/AppLayout";
 import { 
   useAttendanceByDate, 
@@ -16,9 +16,10 @@ import {
 } from "recharts";
 import { 
   Download, FileSpreadsheet, FileText, Calendar, Building2, TrendingUp, 
-  Loader2, AlertCircle, CheckCircle, Clock, Users, Target
+  Loader2, AlertCircle, CheckCircle, Clock, Users, Target, Search
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload?.length) {
@@ -47,6 +48,8 @@ export default function Reports() {
   });
   const [dateTo, setDateTo] = useState(today);
   const [dept, setDept] = useState("All");
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
   const [generated, setGenerated] = useState(false);
   const [showLateReport, setShowLateReport] = useState(false);
   const [lateReportEnabled, setLateReportEnabled] = useState(false);
@@ -60,8 +63,7 @@ export default function Reports() {
     refetch: refetchReport
   } = useAttendanceByDate({ 
     start_date: dateFrom, 
-    end_date: dateTo,
-    ...(dept !== "All" && { employee_name: dept })
+    end_date: dateTo
   });
   const { 
     data: departmentData, 
@@ -102,6 +104,22 @@ export default function Reports() {
   };
   
   const departments = ["All", ...new Set(employees.map(e => getDepartmentName(e.department)).filter(Boolean))];
+  const filteredAttendance = useMemo(() => {
+    const search = employeeSearch.trim().toLowerCase();
+    return (reportData?.attendance || []).filter((record: any) => {
+      const employee = employees.find((item: any) => String(item.employee_id) === String(record.employee_id));
+      const department = employee ? getDepartmentName(employee.department) : "";
+      const matchesEmployee = !search || `${record.full_name || ""} ${record.employee_id}`.toLowerCase().includes(search);
+      const matchesDepartment = dept === "All" || department === dept;
+      const status = record.attendance_entry_status || record.status || "";
+      const matchesStatus = statusFilter === "All"
+        || (statusFilter === "Present" && (["Late", "On Time", "Paid Leave", "Present", "Half Day"].includes(status) || Boolean(record.clock_in || record.clock_out)))
+        || (statusFilter === "Absent" && status === "Absent")
+        || (statusFilter === "On Leave" && ["On Leave", "Paid Leave", "Unpaid Leave"].includes(status))
+        || (statusFilter === "Late" && status === "Late");
+      return matchesEmployee && matchesDepartment && matchesStatus;
+    });
+  }, [reportData, employees, employeeSearch, dept, statusFilter]);
 
   // Process data for charts
   const processWeeklyData = () => {
@@ -118,13 +136,15 @@ export default function Reports() {
     }
 
     // Count attendance by date
-    reportData.attendance.forEach(record => {
+    filteredAttendance.forEach((record: any) => {
       const date = record.date;
       if (dailyStats[date]) {
         if (record.status === 'Absent') {
           dailyStats[date].absent++;
         } else if (record.status === 'Late') {
           dailyStats[date].late++;
+        } else if (record.status === 'Unpaid Leave' || record.status === 'On Leave') {
+          // Leave is shown separately and is not counted as present.
         } else {
           dailyStats[date].present++;
         }
@@ -176,7 +196,7 @@ export default function Reports() {
       }
     });
 
-    return Object.entries(deptStats).map(([dept, stats]) => ({
+    return Object.entries(deptStats).filter(([department]) => dept === "All" || department === dept).map(([dept, stats]) => ({
       dept,
       present: stats.present,
       total: stats.total
@@ -271,6 +291,16 @@ export default function Reports() {
                 {departments.map(d => <option key={d} value={d}>{d === "All" ? "All Departments" : d}</option>)}
               </select>
             </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground font-medium">Employee</label>
+              <div className="relative"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input value={employeeSearch} onChange={event => setEmployeeSearch(event.target.value)} placeholder="Name or employee ID" className="h-10 pl-9" /></div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs text-muted-foreground font-medium">Attendance status</label>
+              <select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+                {["All", "Present", "Absent", "On Leave", "Late"].map(status => <option key={status}>{status}</option>)}
+              </select>
+            </div>
             <Button
               onClick={handleGenerateReport}
               disabled={isReportLoading}
@@ -287,7 +317,7 @@ export default function Reports() {
           {generated && reportData && (
             <div className="mt-3 flex items-center gap-2 text-sm text-success">
               <CheckCircle className="w-4 h-4" />
-              Report generated successfully! Found {reportData.statistics.filtered_count} records.
+              Report generated successfully! Found {filteredAttendance.length} records.
             </div>
           )}
         </div>

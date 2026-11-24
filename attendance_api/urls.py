@@ -6,10 +6,13 @@ urlpatterns = [
     # Connection and basic data
     path('test-connection/', views.test_connection, name='test_connection'),
     path('employees/', views.get_employees, name='get_employees'),
+    path('employees/<str:employee_id>/leave/', views.get_employee_leave, name='employee_leave'),
     path('employees/refresh-cache/', views.refresh_employee_cache, name='refresh_cache'),
     
     # Attendance data
     path('attendance/realtime/', views.get_realtime_attendance, name='realtime_attendance'),
+    path('attendance/punches/', views.get_daily_punches, name='daily_punches'),
+    path('attendance/entries/', views.create_attendance_entry, name='create_attendance_entry'),
     path('attendance/by-date/', views.get_attendance_by_date, name='attendance_by_date'),
     path('attendance/report/', views.get_attendance_report, name='attendance_report'),
     

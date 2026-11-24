@@ -3,10 +3,13 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
+from django.contrib.auth import get_user_model
 from .models import (
     Employee, Device, AttendanceRecord, DailyAttendanceSummary,
-    AttendancePolicy, Holiday, LeaveRequest, SystemLog
+    AttendancePolicy, Holiday, LeaveRequest, SystemLog, UserProfile
 )
+
+User = get_user_model()
 
 
 @admin.register(Employee)
@@ -171,15 +174,15 @@ class HolidayAdmin(admin.ModelAdmin):
 
 @admin.register(LeaveRequest)
 class LeaveRequestAdmin(admin.ModelAdmin):
-    list_display = ['employee', 'leave_type', 'start_date', 'end_date', 'days_count', 'status', 'created_at']
-    list_filter = ['leave_type', 'status', 'start_date', 'created_at']
+    list_display = ['employee', 'leave_type', 'start_date', 'end_date', 'days_count', 'is_paid', 'status', 'created_at']
+    list_filter = ['leave_type', 'is_paid', 'status', 'start_date', 'created_at']
     search_fields = ['employee__employee_id', 'employee__first_name', 'employee__last_name', 'reason']
     readonly_fields = ['days_count', 'created_at', 'updated_at']
     date_hierarchy = 'start_date'
     
     fieldsets = (
         ('Leave Information', {
-            'fields': ('employee', 'leave_type', 'start_date', 'end_date', 'days_count', 'reason')
+            'fields': ('employee', 'leave_type', 'start_date', 'end_date', 'days_count', 'reason', 'is_paid')
         }),
         ('Status', {
             'fields': ('status', 'approved_by', 'approved_at', 'rejection_reason')
@@ -214,6 +217,34 @@ class SystemLogAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False  # Logs should not be modified
+
+
+@admin.register(UserProfile)
+class UserProfileAdmin(admin.ModelAdmin):
+    list_display = ['user', 'role', 'department', 'position', 'is_active', 'created_at']
+    list_filter = ['role', 'is_active', 'department', 'created_at']
+    search_fields = ['user__email', 'user__first_name', 'user__last_name', 'department', 'position']
+    readonly_fields = ['created_at', 'updated_at', 'last_login_ip']
+    list_editable = ['role', 'is_active']
+
+    fieldsets = (
+        ('User', {
+            'fields': ('user',)
+        }),
+        ('Role & Access', {
+            'fields': ('role', 'is_active')
+        }),
+        ('Profile Information', {
+            'fields': ('department', 'position', 'phone', 'avatar_url')
+        }),
+        ('Metadata', {
+            'fields': ('last_login_ip', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('user')
 
 
 # Customize admin site

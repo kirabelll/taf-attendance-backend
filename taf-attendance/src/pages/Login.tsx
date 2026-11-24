@@ -1,24 +1,37 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Fingerprint, Eye, EyeOff, Lock, Mail, ShieldCheck } from "lucide-react";
+import { Fingerprint, Eye, EyeOff, Lock, Mail, ShieldCheck, UserRound, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { apiService } from "@/lib/api";
 
 export default function Login() {
   const [showPass, setShowPass] = useState(false);
-  const [email, setEmail] = useState("admin@company.com");
-  const [password, setPassword] = useState("password");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [registerMode, setRegisterMode] = useState(false);
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+    setError("");
+    try {
+      const result = registerMode
+        ? await apiService.register(name, email, password)
+        : await apiService.login(email, password);
+      localStorage.setItem("attendance_access_token", result.access);
+      localStorage.setItem("attendance_user", JSON.stringify(result.user));
       navigate("/");
-    }, 1200);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Authentication failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -67,7 +80,7 @@ export default function Login() {
 
         <div className="relative flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-success" />
-          <span className="text-xs text-sidebar-foreground">Secured with JWT Authentication · Django REST API</span>
+          <span className="text-xs text-sidebar-foreground">Secured with expiring access tokens · Django API</span>
         </div>
       </div>
 
@@ -83,11 +96,18 @@ export default function Login() {
           </div>
 
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Welcome back</h1>
-            <p className="text-muted-foreground mt-1 text-sm">Sign in to your HR admin account</p>
+            <h1 className="text-2xl font-bold text-foreground">{registerMode ? "Create your account" : "Welcome back"}</h1>
+            <p className="text-muted-foreground mt-1 text-sm">{registerMode ? "Register to access attendance management" : "Sign in to your attendance account"}</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-5">
+            {registerMode && <div className="space-y-2">
+              <Label htmlFor="name" className="text-sm font-medium text-foreground">Full name</Label>
+              <div className="relative">
+                <UserRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input id="name" type="text" value={name} onChange={e => setName(e.target.value)} className="pl-10 h-11" placeholder="Your name" autoComplete="name" required />
+              </div>
+            </div>}
             <div className="space-y-2">
               <Label htmlFor="email" className="text-sm font-medium text-foreground">Email</Label>
               <div className="relative">
@@ -99,6 +119,8 @@ export default function Login() {
                   onChange={e => setEmail(e.target.value)}
                   className="pl-10 h-11"
                   placeholder="admin@company.com"
+                  autoComplete="email"
+                  required
                 />
               </div>
             </div>
@@ -113,7 +135,10 @@ export default function Login() {
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   className="pl-10 pr-10 h-11"
-                  placeholder="••••••••"
+                  placeholder="Enter your password"
+                  autoComplete={registerMode ? "new-password" : "current-password"}
+                  minLength={registerMode ? 8 : undefined}
+                  required
                 />
                 <button
                   type="button"
@@ -125,15 +150,7 @@ export default function Login() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" className="rounded border-border" defaultChecked />
-                <span className="text-sm text-muted-foreground">Remember me</span>
-              </label>
-              <button type="button" className="text-sm text-primary hover:underline">
-                Forgot password?
-              </button>
-            </div>
+            {error && <div role="alert" className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div>}
 
             <Button
               type="submit"
@@ -145,12 +162,19 @@ export default function Login() {
                   <span className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
                   Signing in...
                 </span>
-              ) : "Sign In"}
+              ) : registerMode ? "Create Account" : "Sign In"}
             </Button>
           </form>
 
+          <p className="text-center text-sm text-muted-foreground">
+            {registerMode ? "Already have an account?" : "Need an account?"}{" "}
+            <button type="button" className="font-medium text-primary hover:underline" onClick={() => { setRegisterMode(!registerMode); setError(""); }}>
+              {registerMode ? "Sign in" : "Register"}
+            </button>
+          </p>
+
           <p className="text-center text-xs text-muted-foreground">
-            Protected by JWT · Django REST Framework Backend
+            Attendance API access requires a valid sign-in
           </p>
         </div>
       </div>

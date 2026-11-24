@@ -1,0 +1,111 @@
+{
+  "sales_order_id": "S00112",
+  "currency": "ETB",
+  "salesperson": "sales person",
+  "warehouse": "Area Stores",
+  "payment_type": "Cash Sales",
+  "customer": {
+    "customer_code": "CUST-00000",
+    "customer_name": "XYZ Investment",
+    "customer_type": "Company",
+    "nationality": "Ethiopia",
+    "default_price_list": "Standard Selling",
+    "mobile_no": "",
+    "email_id": "",
+    "id_type": "",
+    "id_issuing_country": "",
+    "id_number": "",
+    "tax_id": "00000000000",
+    "operates_on_multiple_location": 0,
+    "sub_tin_number": "",
+    "tax_withholding_rate": 3.0,
+    "payment_term": "IMMEDIATE",
+    "onload": {
+      "addr_list": [
+        {
+          "address_type": "contact",
+          "Zone": "",
+          "sub_city": "",
+          "kebele": "",
+          "house_number": "",
+          "country": "Ethiopia",
+          "woreda": "",
+          "city": "Addis Ababa",
+          "state": "",
+          "address_line1": "",
+          "address_line2": "",
+          "locality": null,
+          "fax": null,
+          "email_id": null,
+          "phone": null
+        }
+      ],
+      "contact_list": [
+        {
+          "name": "Lebenz Investment",
+          "address": null,
+          "mobile_no": "",
+          "phone": "",
+          "email_id": "",
+          "email_ids": [],
+          "phone_nos": []
+        }
+      ]
+    }
+  },
+  "items": [
+    {
+      "line_id": 248,
+      "item_code": "SDH1000",
+      "item_name": "SPERONI Dewatering pump Model SDH-1000, 0.75KW",
+      "item_group": "SPERONI Pumps",
+      "stock_uom": "PCS",
+      "uom": "PCS",
+      "qty": 1.0,
+      "price_list": "Standard Selling",
+      "price_list_rate": 89736.5,
+      "rate": 89736.5,
+      "description": "SPERONI Dewatering pump Model SDH-1000, 0.75KW",
+      "shelf_life_in_days": 0,
+      "has_batch_no": 0,
+      "has_serial_no": 0,
+      "has_expiry_date": 0,
+      "end_of_life": "2099-12-31",
+      "no_of_months_exp": 0,
+      "max_discount": 0,
+      "discount_percentage": 0.0,
+      "discount_amount": 0.0,
+      "net_rate": 89736.5,
+      "amount": 89736.5,
+      "vat_rate": 15.0,
+      "vat_amount": 13460.48,
+      "withholding_amount": 0.0,
+      "total": 103196.98,
+      "taxes": [
+        {
+          "item_tax_template": "15%",
+          "tax_type": "VAT",
+          "rate": 15.0,
+          "minimum_net_rate": 0,
+          "maximum_net_rate": 0
+        }
+      ],
+      "uoms": [
+        {
+          "uom": "PCS",
+          "conversion_factor": 1
+        }
+      ],
+      "barcodes": []
+    }
+  ],
+  "withholding": {
+    "withhold_applied": true,
+    "rate": 3.0,
+    "amount": 2692.1
+  },
+  "mode_of_payment": {
+    "mode_of_payment": "Cash",
+    "amount": 100504.88
+  }
+}

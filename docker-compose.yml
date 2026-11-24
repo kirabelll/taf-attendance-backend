@@ -134,8 +134,8 @@ services:
     networks:
       - taf-network
 
-  # Frontend (React app served by Nginx)
-  nginx:
+  # React frontend, served by Nginx inside the frontend image
+  frontend:
     build:
       context: ./taf-attendance
       dockerfile: Dockerfile

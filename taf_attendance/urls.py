@@ -17,8 +17,10 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from attendance_api import auth_views
+from attendance_api import views as attendance_views
 
 urlpatterns = [
+    path('health/', attendance_views.health_check, name='health_check'),
     path('admin/', admin.site.urls),
     path('api/auth/register/', auth_views.register, name='auth_register'),
     path('api/auth/login/', auth_views.login, name='auth_login'),

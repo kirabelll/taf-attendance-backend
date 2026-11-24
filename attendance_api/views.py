@@ -21,6 +21,12 @@ from django.utils import timezone
 biotime_client = BioTimeClient()
 employee_cache = {}
 
+
+@require_http_methods(["GET"])
+def health_check(request):
+    """Container health endpoint; does not depend on BioTime availability."""
+    return JsonResponse({"status": "ok"})
+
 def load_employee_cache():
     """Load employee data from BioTime"""
     global employee_cache

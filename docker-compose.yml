@@ -1,4 +1,32 @@
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: taf-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taf_attendance}
+      POSTGRES_USER: ${POSTGRES_USER:-taf_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taf_user} -d ${POSTGRES_DB:-taf_attendance}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: taf-redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   backend:
     build:
       context: .
@@ -6,13 +34,80 @@ services:
     container_name: taf-backend
     restart: always
     ports:
-      - "172.16.10.96:8004:8004"
-    volumes:
-      - .:/app
+      - "8004:8004"
     environment:
-      DJANGO_SETTINGS_MODULE: taf_attendance.settings
-      PYTHONUNBUFFERED: "1"
-    command: python manage.py runserver 0.0.0.0:8004
+      - DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taf_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-taf_attendance}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DEBUG=${DEBUG:-False}
+    volumes:
+      - staticfiles:/app/staticfiles
+      - mediafiles:/app/media
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             exec gunicorn taf_attendance.wsgi:application --bind 0.0.0.0:8004 --workers 3 --timeout 120"
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taf-celery
+    restart: always
+    environment:
+      - DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taf_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-taf_attendance}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - staticfiles:/app/staticfiles
+      - mediafiles:/app/media
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A taf_attendance worker -l info --concurrency=4
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taf-celery-beat
+    restart: always
+    environment:
+      - DJANGO_SETTINGS_MODULE=taf_attendance.settings_production
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-taf_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-taf_attendance}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - staticfiles:/app/staticfiles
+      - mediafiles:/app/media
+      - logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A taf_attendance beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
 
   frontend:
     build:
@@ -26,5 +121,15 @@ services:
       - "8005:80"
     depends_on:
       - backend
-    environment:
-      VITE_API_URL: /api/
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+  redis_data:
+  staticfiles:
+  mediafiles:
+  logs:
